@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: titan-postgres
+    environment:
+      POSTGRES_DB: titan_bridge_prod
+      POSTGRES_USER: titan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - titan-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U titan"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  bridge:
+    build:
+      context: src/bridge
+      dockerfile: Dockerfile
+    container_name: titan-bridge
+    environment:
+      MIX_ENV: prod
+      PORT: "4000"
+      DATABASE_URL: "ecto://titan:${POSTGRES_PASSWORD}@postgres/titan_bridge_prod"
+      CLOAK_KEY: ${CLOAK_KEY:?Set CLOAK_KEY in .env}
+      LCE_CORE_TOKEN: ${LCE_CORE_TOKEN:?Set LCE_CORE_TOKEN in .env}
+      LCE_WEBHOOK_SECRET: ${LCE_WEBHOOK_SECRET:-}
+      LCE_API_TOKEN: ${LCE_API_TOKEN:-}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?Set SECRET_KEY_BASE in .env}
+    ports:
+      - "4000:4000"
+    networks:
+      - titan-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  core:
+    build:
+      context: src/core
+      dockerfile: Dockerfile
+    container_name: titan-core
+    privileged: true
+    environment:
+      ConnectionStrings__PostgreSQL: "Host=postgres;Database=titan;Username=titan;Password=${POSTGRES_PASSWORD}"
+      Hardware__ScalePort: /dev/ttyUSB0
+      Hardware__PrinterDevice: /dev/usb/lp0
+      Elixir__Url: http://bridge:4000
+      Elixir__ApiToken: ${LCE_CORE_TOKEN}
+      ASPNETCORE_ENVIRONMENT: Production
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+      - "/dev/usb/lp0:/dev/usb/lp0"
+    volumes:
+      - core_data:/data
+      - core_logs:/logs
+    ports:
+      - "8080:8080"
+    networks:
+      - titan-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bridge:
+        condition: service_healthy
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+
+volumes:
+  postgres_data:
+  core_data:
+  core_logs:
+
+networks:
+  titan-network:
+    driver: bridge

@@ -1,0 +1,457 @@
+# ============================================
+# TITAN - Monitoring Stack (Docker Compose)
+# ============================================
+# File: monitoring/docker-compose.monitoring.yml
+# ============================================
+version: '3.8'
+
+services:
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: titan-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - titan-monitoring
+    restart: unless-stopped
+
+  # Grafana - Visualization
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: titan-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=titan-admin-123
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - titan-monitoring
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+  # Loki - Log aggregation
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: titan-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - titan-monitoring
+    restart: unless-stopped
+
+  # Promtail - Log collector
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: titan-promtail
+    volumes:
+      - ./promtail/promtail-config.yaml:/etc/promtail/config.yml:ro
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - titan-monitoring
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # Alertmanager - Alert routing
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: titan-alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./alertmanager/config.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    networks:
+      - titan-monitoring
+    restart: unless-stopped
+
+  # Jaeger - Distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: titan-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    networks:
+      - titan-monitoring
+    restart: unless-stopped
+
+  # Node Exporter - System metrics
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: titan-node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    networks:
+      - titan-monitoring
+    restart: unless-stopped
+
+  # PostgreSQL Exporter
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: titan-postgres-exporter
+    environment:
+      - DATA_SOURCE_NAME=postgresql://titan:titan_secret@postgres:5432/titan_prod?sslmode=disable
+    ports:
+      - "9187:9187"
+    networks:
+      - titan-network
+      - titan-monitoring
+    restart: unless-stopped
+
+  # Redis Exporter (if using Redis)
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.55.0
+    container_name: titan-redis-exporter
+    environment:
+      - REDIS_ADDR=redis:6379
+    ports:
+      - "9121:9121"
+    networks:
+      - titan-network
+      - titan-monitoring
+    restart: unless-stopped
+    profiles:
+      - redis
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  alertmanager_data:
+
+networks:
+  titan-monitoring:
+    driver: bridge
+  titan-network:
+    external: true
+
+# ============================================
+# File: monitoring/prometheus/prometheus.yml
+# ============================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: titan
+    replica: '{{.ExternalURL}}'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node Exporter (System metrics)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Titan Core (C# .NET)
+  - job_name: 'titan-core'
+    static_configs:
+      - targets: ['titan-core:8080']
+    metrics_path: /metrics
+    scrape_interval: 5s
+
+  # Titan Bridge (Elixir)
+  - job_name: 'titan-bridge'
+    static_configs:
+      - targets: ['titan-bridge:4000']
+    metrics_path: /metrics
+    scrape_interval: 5s
+
+  # PostgreSQL Exporter
+  - job_name: 'postgres-exporter'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Redis Exporter
+  - job_name: 'redis-exporter'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+# ============================================
+# File: monitoring/prometheus/alerts.yml
+# ============================================
+groups:
+  - name: titan-alerts
+    interval: 30s
+    rules:
+      # Device Offline Alert
+      - alert: DeviceOffline
+        expr: titan_device_connections_active == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No devices connected"
+          description: "Titan Core has no connected devices for more than 1 minute"
+
+      # Queue Backlog Alert
+      - alert: QueueBacklog
+        expr: titan_queue_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Message queue backlog detected"
+          description: "Queue depth is {{ $value }} messages"
+
+      # High Queue Backlog (Critical)
+      - alert: QueueBacklogCritical
+        expr: titan_queue_depth > 5000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical queue backlog"
+          description: "Queue depth is {{ $value }} messages - immediate attention required"
+
+      # ERP Sync Failures
+      - alert: ERPSyncFailureRate
+        expr: rate(titan_erp_sync_requests_total{status="error"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High ERP sync failure rate"
+          description: "ERP sync failure rate is {{ $value }} per second"
+
+      # Print Job Failures
+      - alert: PrintJobFailures
+        expr: increase(titan_print_jobs_failed_total[1h]) > 10
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Print job failures detected"
+          description: "{{ $value }} print jobs failed in the last hour"
+
+      # High Latency Alert
+      - alert: HighWebsocketLatency
+        expr: histogram_quantile(0.95, rate(titan_websocket_message_processing_duration_seconds_bucket[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High WebSocket latency"
+          description: "95th percentile latency is {{ $value }}s"
+
+      # Memory Usage
+      - alert: HighMemoryUsage
+        expr: (vm_memory_total / 1024 / 1024) > 512
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value }} MB"
+
+      # Database Connection Issues
+      - alert: DatabaseConnectionFailure
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection failure"
+          description: "PostgreSQL exporter cannot connect to database"
+
+# ============================================
+# File: monitoring/alertmanager/config.yml
+# ============================================
+global:
+  smtp_smarthost: 'localhost:587'
+  smtp_from: 'alerts@titan.local'
+  smtp_auth_username: ''
+  smtp_auth_password: ''
+
+templates:
+- '/etc/alertmanager/*.tmpl'
+
+route:
+  receiver: 'default-receiver'
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      continue: true
+    - match:
+        severity: warning
+      receiver: 'warning-alerts'
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname']
+
+receivers:
+  - name: 'default-receiver'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#titan-alerts'
+        title: '{{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+  - name: 'critical-alerts'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#titan-critical'
+        title: 'CRITICAL: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+    email_configs:
+      - to: 'ops@accord.uz'
+        subject: 'CRITICAL: Titan Alert'
+        body: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+    telegram_configs:
+      - bot_token: '${TELEGRAM_BOT_TOKEN}'
+        chat_id: '${TELEGRAM_ALERT_CHAT_ID}'
+        message: '🔴 CRITICAL: {{ .GroupLabels.alertname }} - {{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+  - name: 'warning-alerts'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#titan-warnings'
+        title: 'WARNING: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+# ============================================
+# File: monitoring/loki/loki-config.yaml
+# ============================================
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+ruler:
+  alertmanager_url: http://alertmanager:9093
+
+# ============================================
+# File: monitoring/promtail/promtail-config.yaml
+# ============================================
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Titan Core logs
+  - job_name: titan-core
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: titan-core
+          __path__: /var/log/titan/core/*.log
+
+  # Titan Bridge logs
+  - job_name: titan-bridge
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: titan-bridge
+          __path__: /var/log/titan/bridge/*.log
+
+  # Docker container logs
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'

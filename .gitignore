@@ -1,0 +1,31 @@
+# Elixir Bridge
+src/bridge/_build/
+src/bridge/deps/
+src/bridge/*.exs
+!src/bridge/mix.exs
+
+# C# Core
+src/core/src/**/bin/
+src/core/src/**/obj/
+src/core/tests/**/bin/
+src/core/tests/**/obj/
+
+# C# Core Agent
+src/core_agent/bin/
+src/core_agent/obj/
+
+# Secrets & tokens
+.env
+.tg_token
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

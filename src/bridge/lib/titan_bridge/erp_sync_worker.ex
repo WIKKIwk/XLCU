@@ -1,0 +1,357 @@
+defmodule TitanBridge.ErpSyncWorker do
+  @moduledoc """
+  Periodic sync worker — keeps local cache in sync with ERPNext.
+
+  Polls ERPNext every 10s (configurable via LCE_SYNC_INTERVAL_MS).
+  Incremental sync by default; full refresh every 6th cycle.
+
+  Sync targets: Items, Warehouses, Bins (stock levels), Stock Drafts.
+  Each has a "last modified" watermark stored in lce_sync_state table.
+
+  Also handles incoming ERP webhooks (e.g. item updated, draft submitted).
+  On each sync cycle, updates ETS cache and broadcasts via Realtime PubSub.
+  """
+  use GenServer
+  require Logger
+  import Ecto.Query
+
+  alias TitanBridge.{Cache, ErpClient, Realtime, Repo, SyncState}
+  alias TitanBridge.Cache.{Item, Warehouse, Bin, StockDraft}
+
+  def start_link(_args) do
+    GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+  end
+
+  def handle_webhook(payload) when is_map(payload) do
+    GenServer.cast(__MODULE__, {:webhook, payload})
+  end
+
+  @impl true
+  def init(_state) do
+    Cache.warmup()
+    schedule_poll(0)
+    {:ok, %{poll_count: 0}}
+  end
+
+  @impl true
+  def handle_cast({:webhook, payload}, state) do
+    process_webhook(payload)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:poll, state) do
+    next_state =
+      if configured?() do
+        poll_count = state.poll_count + 1
+        full_refresh = full_refresh?(poll_count)
+        sync_all(full_refresh)
+        %{state | poll_count: poll_count}
+      else
+        state
+      end
+
+    schedule_poll(poll_interval())
+    {:noreply, next_state}
+  end
+
+  defp poll_interval do
+    Application.get_env(:titan_bridge, __MODULE__)[:poll_interval_ms] || 10_000
+  end
+
+  defp full_refresh_every do
+    Application.get_env(:titan_bridge, __MODULE__)[:full_refresh_every] || 6
+  end
+
+  defp full_refresh?(count) do
+    n = full_refresh_every()
+    n > 0 and rem(count, n) == 0
+  end
+
+  defp schedule_poll(ms) do
+    Process.send_after(self(), :poll, ms)
+  end
+
+  defp configured? do
+    cfg = ErpClient.get_config()
+    is_binary(cfg[:erp_url]) and String.trim(cfg[:erp_url]) != "" and
+      is_binary(cfg[:erp_token]) and String.trim(cfg[:erp_token]) != ""
+  end
+
+  defp sync_all(full_refresh) do
+    sync_items()
+    sync_warehouses()
+    sync_bins()
+    sync_stock_drafts(full_refresh)
+  end
+
+  defp sync_items do
+    since = SyncState.get("items_modified")
+    rows = fetch_rows(&ErpClient.list_items_modified/1, since)
+    update_items(rows)
+    maybe_put_sync_state("items_modified", rows)
+  end
+
+  defp sync_warehouses do
+    since = SyncState.get("warehouses_modified")
+    rows = fetch_rows(&ErpClient.list_warehouses_modified/1, since)
+    update_warehouses(rows)
+    maybe_put_sync_state("warehouses_modified", rows)
+  end
+
+  defp sync_bins do
+    since = SyncState.get("bins_modified")
+    rows = fetch_rows(&ErpClient.list_bins_modified/1, since)
+    update_bins(rows)
+    maybe_put_sync_state("bins_modified", rows)
+  end
+
+  defp sync_stock_drafts(full_refresh) do
+    since = if full_refresh, do: nil, else: SyncState.get("stock_drafts_modified")
+    rows = fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)
+    cond do
+      rows == [] and full_refresh ->
+        clear_stock_drafts()
+      true ->
+        update_stock_drafts(rows, full_refresh)
+        maybe_put_sync_state("stock_drafts_modified", rows)
+    end
+  end
+
+  defp fetch_rows(fun, since) do
+    case fun.(since) do
+      {:ok, rows} -> rows
+      {:error, reason} ->
+        Logger.warning("ERP sync failed: #{inspect(reason)}")
+        []
+    end
+  end
+
+  defp maybe_put_sync_state(_key, []), do: :ok
+  defp maybe_put_sync_state(key, rows) do
+    case max_modified(rows) do
+      nil -> :ok
+      value -> SyncState.put(key, value)
+    end
+  end
+
+  defp update_items([]), do: :ok
+  defp update_items(rows) do
+    now = now()
+    maps = Enum.map(rows, &item_map(&1, now))
+    {_count, _} =
+      Repo.insert_all(Item, maps,
+        on_conflict: {:replace, [:item_name, :stock_uom, :disabled, :modified, :updated_at]},
+        conflict_target: :name
+      )
+    Cache.put_items(maps)
+    broadcast(:items, length(maps))
+  end
+
+  defp update_warehouses([]), do: :ok
+  defp update_warehouses(rows) do
+    now = now()
+    maps = Enum.map(rows, &warehouse_map(&1, now))
+    {_count, _} =
+      Repo.insert_all(Warehouse, maps,
+        on_conflict: {:replace, [:warehouse_name, :is_group, :disabled, :modified, :updated_at]},
+        conflict_target: :name
+      )
+    Cache.put_warehouses(maps)
+    broadcast(:warehouses, length(maps))
+  end
+
+  defp update_bins([]), do: :ok
+  defp update_bins(rows) do
+    now = now()
+    maps = Enum.map(rows, &bin_map(&1, now))
+    {_count, _} =
+      Repo.insert_all(Bin, maps,
+        on_conflict: {:replace, [:actual_qty, :modified, :updated_at]},
+        conflict_target: [:item_code, :warehouse]
+      )
+    Cache.put_bins(maps)
+    broadcast(:bins, length(maps))
+  end
+
+  defp update_stock_drafts([], _full_refresh), do: :ok
+  defp update_stock_drafts(rows, full_refresh) do
+    now = now()
+    maps = Enum.map(rows, &stock_draft_map(&1, now))
+
+    {_count, _} =
+      Repo.insert_all(StockDraft, maps,
+        on_conflict: {:replace, [:docstatus, :purpose, :posting_date, :posting_time, :from_warehouse, :to_warehouse, :modified, :data, :updated_at]},
+        conflict_target: :name
+      )
+
+    if full_refresh do
+      names = Enum.map(maps, & &1.name)
+      from(d in StockDraft, where: d.name not in ^names) |> Repo.delete_all()
+      Cache.replace_stock_drafts(maps)
+    else
+      Cache.put_stock_drafts(maps)
+    end
+
+    broadcast(:stock_drafts, length(maps))
+  end
+
+  defp process_webhook(payload) do
+    doc = payload["doc"] || payload["data"] || %{}
+    doctype = payload["doctype"] || doc["doctype"]
+    name = payload["name"] || doc["name"]
+
+    case doctype do
+      "Item" ->
+        with {:ok, row} <- resolve_doc(doc, "Item", name) do
+          update_items([row])
+        end
+      "Warehouse" ->
+        with {:ok, row} <- resolve_doc(doc, "Warehouse", name) do
+          update_warehouses([row])
+        end
+      "Bin" ->
+        with {:ok, row} <- resolve_doc(doc, "Bin", name) do
+          update_bins([row])
+        end
+      "Stock Entry" ->
+        with {:ok, row} <- resolve_doc(doc, "Stock Entry", name) do
+          if to_int(row["docstatus"]) == 0 do
+            update_stock_drafts([row], false)
+          else
+            delete_stock_draft(row["name"])
+          end
+        end
+      _ ->
+        :ok
+    end
+  end
+
+  defp resolve_doc(doc, doctype, name) do
+    if map_size(doc) > 0 do
+      {:ok, doc}
+    else
+      case ErpClient.get_doc(doctype, name) do
+        {:ok, row} -> {:ok, row}
+        {:error, reason} ->
+          Logger.warning("ERP webhook fetch failed: #{doctype} #{name} #{inspect(reason)}")
+          {:error, reason}
+      end
+    end
+  end
+
+  defp delete_stock_draft(nil), do: :ok
+  defp delete_stock_draft(name) do
+    Repo.delete_all(from d in StockDraft, where: d.name == ^name)
+    Cache.delete_stock_draft(name)
+    broadcast(:stock_drafts, 1)
+  end
+
+  defp clear_stock_drafts do
+    Repo.delete_all(StockDraft)
+    Cache.replace_stock_drafts([])
+    broadcast(:stock_drafts, 1)
+  end
+
+  defp broadcast(_entity, count) when count <= 0, do: :ok
+  defp broadcast(entity, _count) do
+    payload = %{
+      type: "cache_updated",
+      entity: entity,
+      versions: %{
+        items: Cache.version(:items),
+        warehouses: Cache.version(:warehouses),
+        bins: Cache.version(:bins),
+        stock_drafts: Cache.version(:stock_drafts)
+      }
+    }
+    Realtime.broadcast(payload)
+  end
+
+  defp item_map(row, now) do
+    %{
+      name: row["name"],
+      item_name: row["item_name"],
+      stock_uom: row["stock_uom"],
+      disabled: to_bool(row["disabled"]),
+      modified: row["modified"],
+      inserted_at: now,
+      updated_at: now
+    }
+  end
+
+  defp warehouse_map(row, now) do
+    %{
+      name: row["name"],
+      warehouse_name: row["warehouse_name"],
+      is_group: to_bool(row["is_group"]),
+      disabled: to_bool(row["disabled"]),
+      modified: row["modified"],
+      inserted_at: now,
+      updated_at: now
+    }
+  end
+
+  defp bin_map(row, now) do
+    %{
+      item_code: row["item_code"],
+      warehouse: row["warehouse"],
+      actual_qty: to_float(row["actual_qty"]),
+      modified: row["modified"],
+      inserted_at: now,
+      updated_at: now
+    }
+  end
+
+  defp stock_draft_map(row, now) do
+    %{
+      name: row["name"],
+      docstatus: to_int(row["docstatus"]),
+      purpose: row["purpose"],
+      posting_date: row["posting_date"],
+      posting_time: row["posting_time"],
+      from_warehouse: row["from_warehouse"],
+      to_warehouse: row["to_warehouse"],
+      modified: row["modified"],
+      data: row,
+      inserted_at: now,
+      updated_at: now
+    }
+  end
+
+  defp max_modified(rows) do
+    rows
+    |> Enum.map(& &1["modified"])
+    |> Enum.filter(&is_binary/1)
+    |> case do
+      [] -> nil
+      list -> Enum.max(list)
+    end
+  end
+
+  defp now do
+    NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+  end
+
+  defp to_bool(val) when val in [true, 1, "1", "true", "yes", "on"], do: true
+  defp to_bool(_), do: false
+
+  defp to_int(val) when is_integer(val), do: val
+  defp to_int(val) when is_binary(val) do
+    case Integer.parse(val) do
+      {n, _} -> n
+      _ -> 0
+    end
+  end
+  defp to_int(_), do: 0
+
+  defp to_float(val) when is_float(val), do: val
+  defp to_float(val) when is_integer(val), do: val * 1.0
+  defp to_float(val) when is_binary(val) do
+    case Float.parse(val) do
+      {n, _} -> n
+      _ -> 0.0
+    end
+  end
+  defp to_float(_), do: 0.0
+end

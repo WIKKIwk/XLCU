@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Titan.Core/Titan.Core.csproj" />
+    <Project Path="src/Titan.Domain/Titan.Domain.csproj" />
+    <Project Path="src/Titan.Host/Titan.Host.csproj" />
+    <Project Path="src/Titan.Infrastructure/Titan.Infrastructure.csproj" />
+    <Project Path="src/Titan.TUI/Titan.TUI.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Titan.Core.Tests/Titan.Core.Tests.csproj" />
+    <Project Path="tests/Titan.Integration.Tests/Titan.Integration.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,401 @@
+# ============================================
+# TITAN - GitOps with ArgoCD
+# ============================================
+# File: argocd/applications/titan-core.yaml
+# ============================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: titan-core
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: titan
+  source:
+    repoURL: https://github.com/accord/titan.git
+    targetRevision: HEAD
+    path: k8s/overlays/production/core
+    helm:
+      valueFiles:
+        - values-production.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: titan-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+
+---
+# ============================================
+# File: argocd/applications/titan-bridge.yaml
+# ============================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: titan-bridge
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: titan
+  source:
+    repoURL: https://github.com/accord/titan.git
+    targetRevision: HEAD
+    path: k8s/overlays/production/bridge
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: titan-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+---
+# ============================================
+# File: argocd/applications/titan-monitoring.yaml
+# ============================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: titan-monitoring
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: titan
+  source:
+    repoURL: https://github.com/accord/titan.git
+    targetRevision: HEAD
+    path: monitoring/k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+---
+# ============================================
+# File: argocd/appprojects/titan.yaml
+# ============================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: titan
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Titan RFID/Zebra Warehouse System
+  
+  # Allow manifests to deploy from any Git repos
+  sourceRepos:
+    - 'https://github.com/accord/titan.git'
+    - 'https://charts.bitnami.com/bitnami'
+    - 'https://kubernetes.github.io/ingress-nginx'
+  
+  # Only permit applications to deploy to specific namespaces
+  destinations:
+    - namespace: titan-production
+      server: https://kubernetes.default.svc
+    - namespace: titan-staging
+      server: https://kubernetes.default.svc
+    - namespace: monitoring
+      server: https://kubernetes.default.svc
+  
+  # Deny all cluster-scoped resources from being created
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRoleBinding
+  
+  # Allow specific namespaced resources
+  namespaceResourceWhitelist:
+    - group: 'apps'
+      kind: Deployment
+    - group: 'apps'
+      kind: StatefulSet
+    - group: ''
+      kind: Service
+    - group: ''
+      kind: ConfigMap
+    - group: ''
+      kind: Secret
+    - group: ''
+      kind: PersistentVolumeClaim
+    - group: 'networking.k8s.io'
+      kind: Ingress
+    - group: 'networking.k8s.io'
+      kind: NetworkPolicy
+    - group: 'autoscaling'
+      kind: HorizontalPodAutoscaler
+    - group: 'policy'
+      kind: PodDisruptionBudget
+    - group: 'monitoring.coreos.com'
+      kind: ServiceMonitor
+  
+  # Enable orphaned resource monitoring
+  orphanedResources:
+    warn: true
+
+---
+# ============================================
+# File: argocd/applicationsets/titan-envs.yaml
+# ============================================
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: titan-environments
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - namespace: titan-staging
+            environment: staging
+            targetRevision: develop
+            replicas: 1
+          - namespace: titan-production
+            environment: production
+            targetRevision: main
+            replicas: 3
+  template:
+    metadata:
+      name: 'titan-{{environment}}'
+      namespace: argocd
+    spec:
+      project: titan
+      source:
+        repoURL: https://github.com/accord/titan.git
+        targetRevision: '{{targetRevision}}'
+        path: helm/titan
+        helm:
+          valueFiles:
+            - 'values-{{environment}}.yaml'
+          parameters:
+            - name: bridge.replicaCount
+              value: '{{replicas}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+
+---
+# ============================================
+# File: k8s/overlays/production/kustomization.yaml
+# ============================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: titan-production
+
+resources:
+  - ../../base
+  - ingress-production.yaml
+  - pdb.yaml
+  - network-policies.yaml
+
+patchesStrategicMerge:
+  - core-deployment-patch.yaml
+  - bridge-deployment-patch.yaml
+
+configMapGenerator:
+  - name: titan-core-config
+    behavior: merge
+    literals:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ElixirBridge__Url=ws://titan-bridge.titan-production.svc.cluster.local:4000/socket
+  
+  - name: titan-bridge-config
+    behavior: merge
+    literals:
+      - MIX_ENV=prod
+      - PHX_HOST=titan.accord.uz
+
+secretGenerator:
+  - name: titan-secrets
+    behavior: merge
+    envs:
+      - secrets.env  # This file is encrypted with Sealed Secrets or External Secrets
+
+replicas:
+  - name: titan-bridge
+    count: 3
+
+images:
+  - name: registry.accord.uz/titan/core
+    newTag: v1.0.0
+  - name: registry.accord.uz/titan/bridge
+    newTag: v1.0.0
+
+---
+# ============================================
+# File: k8s/overlays/production/core-deployment-patch.yaml
+# ============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: titan-core
+spec:
+  replicas: 1
+  template:
+    spec:
+      nodeSelector:
+        node-type: hardware
+      tolerations:
+        - key: "hardware"
+          operator: "Equal"
+          value: "titan"
+          effect: "NoSchedule"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - hardware-node-1
+
+---
+# ============================================
+# File: k8s/overlays/production/bridge-deployment-patch.yaml
+# ============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: titan-bridge
+spec:
+  replicas: 3
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: titan-bridge
+                topologyKey: topology.kubernetes.io/zone
+
+---
+# ============================================
+# File: k8s/overlays/production/pdb.yaml
+# ============================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: titan-bridge-pdb
+  namespace: titan-production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: titan-bridge
+
+---
+# ============================================
+# File: k8s/overlays/production/network-policies.yaml
+# ============================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: titan-default-deny
+  namespace: titan-production
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: titan-allow-ingress
+  namespace: titan-production
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: titan
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 4000
+        - protocol: TCP
+          port: 8080
+
+---
+# ============================================
+# File: sealed-secrets/sealed-secret.yaml (Template)
+# ============================================
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: titan-secrets
+  namespace: titan-production
+spec:
+  encryptedData:
+    ConnectionStrings__PostgreSQL: AgByA...
+    DATABASE_URL: AgByA...
+    SECRET_KEY_BASE: AgByA...
+    SESSION_ENCRYPTION_KEY: AgByA...
+    TITAN_API_TOKEN: AgByA...
+    TELEGRAM_BOT_TOKEN: AgByA...
+    ERP_API_KEY: AgByA...
+    ERP_API_SECRET: AgByA...
+  template:
+    type: Opaque
+    metadata:
+      name: titan-secrets
+      namespace: titan-production

@@ -1,0 +1,410 @@
+{
+  "_comment": "TITAN GRAFANA DASHBOARDS",
+  "dashboards": [
+    {
+      "title": "Titan - Overview",
+      "uid": "titan-overview",
+      "description": "High-level system overview",
+      "panels": [
+        {
+          "title": "System Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "titan_device_connections_active",
+              "legendFormat": "Active Devices"
+            },
+            {
+              "expr": "titan_queue_depth",
+              "legendFormat": "Queue Depth"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 100},
+                  {"color": "red", "value": 1000}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "Device Connections",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "titan_device_connections_active",
+              "legendFormat": "Total"
+            },
+            {
+              "expr": "titan_device_connections{status=\"online\"}",
+              "legendFormat": "Online"
+            },
+            {
+              "expr": "titan_device_connections{status=\"busy\"}",
+              "legendFormat": "Busy"
+            }
+          ]
+        },
+        {
+          "title": "Message Queue",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "titan_queue_depth",
+              "legendFormat": "Queue Depth"
+            },
+            {
+              "expr": "rate(titan_queue_messages_enqueued_total[5m])",
+              "legendFormat": "Enqueue Rate"
+            }
+          ]
+        },
+        {
+          "title": "ERP Sync Performance",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(titan_erp_sync_requests_total[5m])",
+              "legendFormat": "Requests/sec"
+            },
+            {
+              "expr": "histogram_quantile(0.95, rate(titan_erp_sync_duration_seconds_bucket[5m]))",
+              "legendFormat": "P95 Latency"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Titan - FSM & Batch Processing",
+      "uid": "titan-fsm",
+      "description": "Finite State Machine and batch processing metrics",
+      "panels": [
+        {
+          "title": "Current State",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "titan_fsm_current_state",
+              "legendFormat": "State"
+            }
+          ]
+        },
+        {
+          "title": "State Transitions",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(titan_fsm_transitions_total[5m])",
+              "legendFormat": "Transitions/sec"
+            }
+          ]
+        },
+        {
+          "title": "Weight Distribution",
+          "type": "histogram",
+          "targets": [
+            {
+              "expr": "titan_weight_distribution_bucket",
+              "legendFormat": "{{le}} kg"
+            }
+          ]
+        },
+        {
+          "title": "Print Jobs",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(titan_print_jobs_total[5m])",
+              "legendFormat": "Success"
+            },
+            {
+              "expr": "rate(titan_print_jobs_failed_total[5m])",
+              "legendFormat": "Failed"
+            }
+          ]
+        },
+        {
+          "title": "Print Duration",
+          "type": "heatmap",
+          "targets": [
+            {
+              "expr": "rate(titan_print_duration_seconds_bucket[5m])",
+              "legendFormat": "{{le}}"
+            }
+          ]
+        },
+        {
+          "title": "Active Batches",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "titan_batch_active_info",
+              "format": "table",
+              "instant": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Titan - Hardware",
+      "uid": "titan-hardware",
+      "description": "Hardware device metrics",
+      "panels": [
+        {
+          "title": "Scale Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "titan_hardware_status{device=\"scale\"}",
+              "legendFormat": "Scale"
+            }
+          ]
+        },
+        {
+          "title": "Printer Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "titan_hardware_status{device=\"printer\"}",
+              "legendFormat": "Printer"
+            }
+          ]
+        },
+        {
+          "title": "Current Weight",
+          "type": "gauge",
+          "targets": [
+            {
+              "expr": "titan_weight_current",
+              "legendFormat": "Weight"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "min": 0,
+              "max": 10,
+              "unit": "kg"
+            }
+          }
+        },
+        {
+          "title": "Weight Over Time",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "titan_weight_current",
+              "legendFormat": "Weight (kg)"
+            },
+            {
+              "expr": "titan_weight_stable",
+              "legendFormat": "Stable"
+            }
+          ]
+        },
+        {
+          "title": "Hardware Events",
+          "type": "logs",
+          "targets": [
+            {
+              "expr": "{job=\"titan-core\"} |= \"hardware\"",
+              "refId": "A"
+            }
+          ],
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          }
+        }
+      ]
+    },
+    {
+      "title": "Titan - WebSocket & Messaging",
+      "uid": "titan-websocket",
+      "description": "Real-time communication metrics",
+      "panels": [
+        {
+          "title": "WebSocket Connections",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "titan_websocket_connections_active",
+              "legendFormat": "Active"
+            },
+            {
+              "expr": "rate(titan_websocket_connections_total[5m])",
+              "legendFormat": "New/sec"
+            }
+          ]
+        },
+        {
+          "title": "Message Throughput",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(titan_websocket_messages_received_total[5m])",
+              "legendFormat": "Received"
+            },
+            {
+              "expr": "rate(titan_websocket_messages_sent_total[5m])",
+              "legendFormat": "Sent"
+            }
+          ]
+        },
+        {
+          "title": "Message Latency",
+          "type": "heatmap",
+          "targets": [
+            {
+              "expr": "rate(titan_websocket_message_processing_duration_seconds_bucket[5m])",
+              "legendFormat": "{{le}}"
+            }
+          ]
+        },
+        {
+          "title": "Message Types",
+          "type": "piechart",
+          "targets": [
+            {
+              "expr": "sum by (message_type) (titan_websocket_messages_received_total)",
+              "legendFormat": "{{message_type}}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Titan - System Resources",
+      "uid": "titan-resources",
+      "description": "VM and system resource usage",
+      "panels": [
+        {
+          "title": "Memory Usage",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "vm_memory_total / 1024 / 1024",
+              "legendFormat": "Total (MB)"
+            },
+            {
+              "expr": "vm_memory_processes / 1024 / 1024",
+              "legendFormat": "Processes (MB)"
+            },
+            {
+              "expr": "vm_memory_ets / 1024 / 1024",
+              "legendFormat": "ETS (MB)"
+            }
+          ]
+        },
+        {
+          "title": "Run Queue Lengths",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "vm_total_run_queue_lengths_total",
+              "legendFormat": "Total"
+            },
+            {
+              "expr": "vm_total_run_queue_lengths_cpu",
+              "legendFormat": "CPU"
+            },
+            {
+              "expr": "vm_total_run_queue_lengths_io",
+              "legendFormat": "IO"
+            }
+          ]
+        },
+        {
+          "title": "CPU Usage",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(node_cpu_seconds_total[5m])",
+              "legendFormat": "{{mode}}"
+            }
+          ]
+        },
+        {
+          "title": "Disk I/O",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(node_disk_io_time_seconds_total[5m])",
+              "legendFormat": "{{device}}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Titan - Alerts",
+      "uid": "titan-alerts",
+      "description": "Active alerts and alert history",
+      "panels": [
+        {
+          "title": "Active Alerts",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "ALERTS{alertstate=\"firing\"}",
+              "format": "table",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "title": "Alert History",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "changes(ALERTS[1h])",
+              "legendFormat": "{{alertname}}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Titan - Telegram Bot",
+      "uid": "titan-telegram",
+      "description": "Telegram bot usage metrics",
+      "panels": [
+        {
+          "title": "Active Sessions",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "titan_telegram_sessions_active",
+              "legendFormat": "Sessions"
+            }
+          ]
+        },
+        {
+          "title": "Commands Usage",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(titan_telegram_commands_total[5m])",
+              "legendFormat": "{{command}}"
+            }
+          ]
+        },
+        {
+          "title": "Response Time",
+          "type": "heatmap",
+          "targets": [
+            {
+              "expr": "rate(titan_telegram_response_duration_seconds_bucket[5m])",
+              "legendFormat": "{{le}}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

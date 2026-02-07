@@ -1,0 +1,517 @@
+# ============================================
+# TITAN - Helm Charts
+# ============================================
+# File: helm/titan/Chart.yaml
+# ============================================
+apiVersion: v2
+name: titan
+description: A Helm chart for Titan RFID/Zebra Warehouse System
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - titan
+  - rfid
+  - zebra
+  - warehouse
+  - erp
+home: https://github.com/accord/titan
+sources:
+  - https://github.com/accord/titan
+maintainers:
+  - name: Titan Team
+    email: dev@accord.uz
+dependencies:
+  - name: postgresql
+    version: 13.2.0
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: 18.5.0
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+  - name: ingress-nginx
+    version: 4.8.3
+    repository: https://kubernetes.github.io/ingress-nginx
+    condition: ingress.nginx.enabled
+
+---
+# ============================================
+# File: helm/titan/values.yaml
+# ============================================
+# Global settings
+global:
+  imageRegistry: "registry.accord.uz"
+  imagePullSecrets: []
+  storageClass: "standard"
+
+# Titan Core (C# .NET)
+core:
+  enabled: true
+  replicaCount: 1
+  
+  image:
+    repository: titan/core
+    tag: v1.0.0
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 8080
+  
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 1000m
+  
+  nodeSelector:
+    hardware: enabled
+  
+  tolerations:
+    - key: "dedicated"
+      operator: "Equal"
+      value: "titan-hardware"
+      effect: "NoSchedule"
+  
+  affinity: {}
+  
+  persistence:
+    enabled: true
+    size: 10Gi
+    accessMode: ReadWriteOnce
+  
+  config:
+    aspnetcoreEnvironment: Production
+    hardwareScalePort: /dev/ttyUSB0
+    hardwarePrinterDevice: /dev/usb/lp0
+    elixirBridgeUrl: "ws://titan-bridge:4000/socket"
+  
+  secrets:
+    connectionString: ""
+    elixirBridgeToken: ""
+
+# Titan Bridge (Elixir Phoenix)
+bridge:
+  enabled: true
+  replicaCount: 3
+  
+  image:
+    repository: titan/bridge
+    tag: v1.0.0
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 4000
+  
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 500m
+    limits:
+      memory: 1Gi
+      cpu: 2000m
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  
+  config:
+    mixEnv: prod
+    port: 4000
+    phxHost: titan.accord.uz
+    otelServiceName: titan-bridge
+    otelExporterOtlpEndpoint: http://jaeger-collector.monitoring.svc.cluster.local:4317
+    erpUrl: https://erp.accord.uz
+  
+  secrets:
+    databaseUrl: ""
+    secretKeyBase: ""
+    sessionEncryptionKey: ""
+    apiToken: ""
+    telegramBotToken: ""
+    telegramBotUsername: titan_core_bot
+    erpApiKey: ""
+    erpApiSecret: ""
+
+# Ingress
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: titan.accord.uz
+      paths:
+        - path: /
+          pathType: Prefix
+          service: bridge
+          port: 4000
+    - host: api.titan.accord.uz
+      paths:
+        - path: /
+          pathType: Prefix
+          service: core
+          port: 8080
+  tls:
+    - secretName: titan-tls
+      hosts:
+        - titan.accord.uz
+        - api.titan.accord.uz
+
+# PostgreSQL (subchart)
+postgresql:
+  enabled: true
+  auth:
+    username: titan
+    password: titan_secret
+    database: titan_production
+  primary:
+    persistence:
+      enabled: true
+      size: 50Gi
+    resources:
+      requests:
+        memory: 512Mi
+        cpu: 500m
+      limits:
+        memory: 2Gi
+        cpu: 2000m
+
+# Redis (subchart)
+redis:
+  enabled: false
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+# Monitoring
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+    scrapeTimeout: 10s
+
+# Pod Disruption Budget
+pdb:
+  enabled: true
+  minAvailable: 2
+
+# Security Context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Network Policy
+networkPolicy:
+  enabled: true
+
+---
+# ============================================
+# File: helm/titan/templates/_helpers.tpl
+# ============================================
+{{/* Expand the name of the chart */}}
+{{- define "titan.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/* Create a default fully qualified app name */}}
+{{- define "titan.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Create chart name and version */}}
+{{- define "titan.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/* Common labels */}}
+{{- define "titan.labels" -}}
+helm.sh/chart: {{ include "titan.chart" . }}
+{{ include "titan.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/* Selector labels */}}
+{{- define "titan.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "titan.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/* Core labels */}}
+{{- define "titan.core.labels" -}}
+{{ include "titan.labels" . }}
+app.kubernetes.io/component: core
+{{- end }}
+
+{{/* Bridge labels */}}
+{{- define "titan.bridge.labels" -}}
+{{ include "titan.labels" . }}
+app.kubernetes.io/component: bridge
+{{- end }}
+
+{{/* Create the name of the service account */}}
+{{- define "titan.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "titan.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+---
+# ============================================
+# File: helm/titan/templates/core-deployment.yaml
+# ============================================
+{{- if .Values.core.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "titan.fullname" . }}-core
+  labels:
+    {{- include "titan.core.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.core.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "titan.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: core
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "{{ .Values.monitoring.enabled }}"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+        checksum/config: {{ include (print $.Template.BasePath "/core-configmap.yaml") . | sha256sum }}
+        checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+      labels:
+        {{- include "titan.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: core
+    spec:
+      {{- with .Values.core.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.core.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.core.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: core
+          image: "{{ .Values.global.imageRegistry }}/{{ .Values.core.image.repository }}:{{ .Values.core.image.tag }}"
+          imagePullPolicy: {{ .Values.core.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "titan.fullname" . }}-core-config
+            - secretRef:
+                name: {{ include "titan.fullname" . }}-secrets
+          resources:
+            {{- toYaml .Values.core.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.core.persistence.enabled }}
+            - name: data
+              mountPath: /app/data
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.core.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "titan.fullname" . }}-core-data
+        {{- end }}
+{{- end }}
+
+---
+# ============================================
+# File: helm/titan/templates/bridge-deployment.yaml
+# ============================================
+{{- if .Values.bridge.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "titan.fullname" . }}-bridge
+  labels:
+    {{- include "titan.bridge.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.bridge.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "titan.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: bridge
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "{{ .Values.monitoring.enabled }}"
+        prometheus.io/port: "4000"
+        prometheus.io/path: "/metrics"
+        checksum/config: {{ include (print $.Template.BasePath "/bridge-configmap.yaml") . | sha256sum }}
+        checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+      labels:
+        {{- include "titan.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: bridge
+    spec:
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: bridge
+          image: "{{ .Values.global.imageRegistry }}/{{ .Values.bridge.image.repository }}:{{ .Values.bridge.image.tag }}"
+          imagePullPolicy: {{ .Values.bridge.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 4000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "titan.fullname" . }}-bridge-config
+            - secretRef:
+                name: {{ include "titan.fullname" . }}-secrets
+          resources:
+            {{- toYaml .Values.bridge.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+
+---
+# ============================================
+# File: helm/titan/templates/bridge-hpa.yaml
+# ============================================
+{{- if and .Values.bridge.enabled .Values.bridge.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "titan.fullname" . }}-bridge-hpa
+  labels:
+    {{- include "titan.bridge.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "titan.fullname" . }}-bridge
+  minReplicas: {{ .Values.bridge.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.bridge.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.bridge.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.bridge.autoscaling.targetMemoryUtilizationPercentage }}
+{{- end }}
+
+---
+# ============================================
+# File: helm/titan/templates/servicemonitor.yaml
+# ============================================
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "titan.fullname" . }}
+  labels:
+    {{- include "titan.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "titan.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      path: /metrics
+{{- end }}

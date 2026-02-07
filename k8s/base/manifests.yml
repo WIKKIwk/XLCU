@@ -1,0 +1,549 @@
+# ============================================
+# TITAN - Kubernetes Production Manifests
+# ============================================
+# File: k8s/base/namespace.yml
+# ============================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: titan-production
+  labels:
+    name: titan-production
+    app.kubernetes.io/name: titan
+    app.kubernetes.io/component: namespace
+    environment: production
+
+---
+# ============================================
+# File: k8s/base/configmap-core.yml
+# ============================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: titan-core-config
+  namespace: titan-production
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  ASPNETCORE_URLS: "http://+:8080"
+  Logging__LogLevel__Default: "Information"
+  Hardware__ScalePort: "/dev/ttyUSB0"
+  Hardware__PrinterDevice: "/dev/usb/lp0"
+  ElixirBridge__Url: "ws://titan-bridge:4000/socket"
+  
+---
+# ============================================
+# File: k8s/base/configmap-bridge.yml
+# ============================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: titan-bridge-config
+  namespace: titan-production
+data:
+  MIX_ENV: "prod"
+  PORT: "4000"
+  PHX_HOST: "titan.accord.uz"
+  OTEL_SERVICE_NAME: "titan-bridge"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger-collector:4317"
+  ERP_URL: "https://erp.accord.uz"
+
+---
+# ============================================
+# File: k8s/base/secret.yml (Template - use SealedSecret or External Secret in production)
+# ============================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: titan-secrets
+  namespace: titan-production
+type: Opaque
+stringData:
+  # Database
+  ConnectionStrings__PostgreSQL: "Host=postgres.titan-production.svc.cluster.local;Database=titan;Username=titan;Password=CHANGE_ME"
+  DATABASE_URL: "ecto://titan:CHANGE_ME@postgres.titan-production.svc.cluster.local/titan_bridge_prod"
+  
+  # Security
+  SECRET_KEY_BASE: "CHANGE_ME_64_CHAR_SECRET"
+  SESSION_ENCRYPTION_KEY: "CHANGE_ME_32_BYTE_KEY"
+  TITAN_API_TOKEN: "CHANGE_ME_API_TOKEN"
+  
+  # Telegram
+  TELEGRAM_BOT_TOKEN: "CHANGE_ME_BOT_TOKEN"
+  TELEGRAM_BOT_USERNAME: "titan_core_bot"
+  
+  # ERP
+  ERP_API_KEY: "CHANGE_ME"
+  ERP_API_SECRET: "CHANGE_ME"
+  
+  # Elixir Bridge
+  ElixirBridge__ApiToken: "CHANGE_ME_DEVICE_TOKEN"
+
+  # Token encryption
+  CLOAK_KEY: "CHANGE_ME_BASE64_32_BYTE_KEY"
+  LCE_CORE_TOKEN: "CHANGE_ME_CORE_TOKEN"
+  LCE_WEBHOOK_SECRET: "CHANGE_ME_WEBHOOK_SECRET"
+  LCE_API_TOKEN: "CHANGE_ME_API_TOKEN"
+
+---
+# ============================================
+# File: k8s/base/deployment-core.yml
+# ============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: titan-core
+  namespace: titan-production
+  labels:
+    app: titan-core
+    version: v1.0.0
+spec:
+  replicas: 1  # Core is singleton due to hardware access
+  strategy:
+    type: Recreate  # Recreate for hardware device access
+  selector:
+    matchLabels:
+      app: titan-core
+  template:
+    metadata:
+      labels:
+        app: titan-core
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      nodeSelector:
+        hardware: "enabled"  # Only nodes with hardware attached
+      tolerations:
+        - key: "dedicated"
+          operator: "Equal"
+          value: "titan-hardware"
+          effect: "NoSchedule"
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      containers:
+        - name: titan-core
+          image: registry.accord.uz/titan/core:v1.0.0
+          imagePullPolicy: Always
+          
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          
+          envFrom:
+            - configMapRef:
+                name: titan-core-config
+            - secretRef:
+                name: titan-secrets
+          
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+          
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /app/data
+          
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+      
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: titan-core-data
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - titan-core
+                topologyKey: kubernetes.io/hostname
+
+---
+# ============================================
+# File: k8s/base/deployment-bridge.yml
+# ============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: titan-bridge
+  namespace: titan-production
+  labels:
+    app: titan-bridge
+    version: v1.0.0
+spec:
+  replicas: 3  # Multiple replicas for HA
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: titan-bridge
+  template:
+    metadata:
+      labels:
+        app: titan-bridge
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "4000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      containers:
+        - name: titan-bridge
+          image: registry.accord.uz/titan/bridge:v1.0.0
+          imagePullPolicy: Always
+          
+          ports:
+            - name: http
+              containerPort: 4000
+              protocol: TCP
+          
+          envFrom:
+            - configMapRef:
+                name: titan-bridge-config
+            - secretRef:
+                name: titan-secrets
+          
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "2000m"
+          
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - titan-bridge
+                topologyKey: kubernetes.io/hostname
+
+---
+# ============================================
+# File: k8s/base/service-core.yml
+# ============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: titan-core
+  namespace: titan-production
+  labels:
+    app: titan-core
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: titan-core
+
+---
+# ============================================
+# File: k8s/base/service-bridge.yml
+# ============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: titan-bridge
+  namespace: titan-production
+  labels:
+    app: titan-bridge
+spec:
+  type: ClusterIP
+  ports:
+    - port: 4000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: titan-bridge
+
+---
+# ============================================
+# File: k8s/base/ingress.yml
+# ============================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: titan-ingress
+  namespace: titan-production
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # WebSocket support
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  tls:
+    - hosts:
+        - titan.accord.uz
+        - api.titan.accord.uz
+      secretName: titan-tls
+  rules:
+    - host: titan.accord.uz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: titan-bridge
+                port:
+                  number: 4000
+    
+    - host: api.titan.accord.uz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: titan-core
+                port:
+                  number: 8080
+
+---
+# ============================================
+# File: k8s/base/hpa-bridge.yml
+# ============================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: titan-bridge-hpa
+  namespace: titan-production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: titan-bridge
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+
+---
+# ============================================
+# File: k8s/base/pvc-core.yml
+# ============================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: titan-core-data
+  namespace: titan-production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+
+---
+# ============================================
+# File: k8s/base/network-policy.yml
+# ============================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: titan-network-policy
+  namespace: titan-production
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: titan
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress from nginx-ingress
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 4000
+        - protocol: TCP
+          port: 8080
+    
+    # Allow inter-service communication
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: titan
+  
+  egress:
+    # Allow DNS
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+    
+    # Allow PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    
+    # Allow Redis (if used)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    
+    # Allow external ERP
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+    
+    # Allow Prometheus scraping
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 4000
+        - protocol: TCP
+          port: 8080

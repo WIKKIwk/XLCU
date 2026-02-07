@@ -1,0 +1,197 @@
+defmodule TitanBridge.Web.Router do
+  @moduledoc """
+  HTTP + WebSocket router. All endpoints return JSON.
+
+  WebSocket:
+    GET /ws          — realtime cache updates (for external clients)
+    GET /ws/core     — Core device communication (auth, commands, status)
+
+  REST:
+    GET  /api/health              — liveness check
+    GET  /api/status              — full system snapshot
+    GET  /api/config              — current settings (tokens masked)
+    POST /api/config              — update settings (from Telegram setup or CLI)
+    POST /api/webhook/erp         — ERPNext webhook receiver
+    GET  /api/cache/{resource}    — cached items, warehouses, bins, stock_drafts
+    GET  /api/epc/exists          — check EPC in local registry
+    GET  /api/epc/check           — check EPC in local + ERPNext
+    POST /api/epc/register        — register new EPC code
+    POST /api/sync/records        — bulk sync weight records from Core
+  """
+  use Plug.Router
+  require Logger
+
+  alias TitanBridge.{Cache, EpcRegistry, ErpClient, ErpSyncWorker, SettingsStore, Status}
+
+  plug :match
+  plug Plug.Parsers,
+    parsers: [:json],
+    json_decoder: Jason
+  plug :dispatch
+
+  get "/" do
+    send_resp(conn, 200, "titan_bridge ok")
+  end
+
+  get "/ws" do
+    conn = Plug.Conn.upgrade_adapter(conn, :websocket, {TitanBridge.Web.WsHandler, %{}, %{}})
+    conn
+  end
+
+  get "/ws/core" do
+    core_state = %{authed: false, device_id: nil, last_pong: nil}
+    conn = Plug.Conn.upgrade_adapter(conn, :websocket, {TitanBridge.Web.CoreSocket, core_state, %{}})
+    conn
+  end
+
+  get "/api/health" do
+    send_json(conn, %{ok: true, service: "titan_bridge", ts: DateTime.utc_now()})
+  end
+
+  get "/api/status" do
+    send_json(conn, Status.snapshot())
+  end
+
+  get "/api/config" do
+    send_json(conn, %{ok: true, config: SettingsStore.masked()})
+  end
+
+  post "/api/config" do
+    attrs = conn.body_params || %{}
+    case SettingsStore.upsert(attrs) do
+      {:ok, _} ->
+        TitanBridge.Telegram.Bot.reload()
+        send_json(conn, %{ok: true})
+      {:error, err} ->
+        send_json(conn, %{ok: false, error: inspect(err)})
+    end
+  end
+
+  post "/api/webhook/erp" do
+    payload = conn.body_params || %{}
+    ErpSyncWorker.handle_webhook(payload)
+    send_json(conn, %{ok: true})
+  end
+
+  get "/api/cache/versions" do
+    send_json(conn, %{
+      ok: true,
+      versions: %{
+        items: Cache.version(:items),
+        warehouses: Cache.version(:warehouses),
+        bins: Cache.version(:bins),
+        stock_drafts: Cache.version(:stock_drafts)
+      }
+    })
+  end
+
+  get "/api/cache/items" do
+    query = conn.params["q"] || conn.params["query"] || ""
+    limit = parse_limit(conn.params["limit"])
+    items = Cache.search_items(query, limit)
+    send_json(conn, %{ok: true, items: items})
+  end
+
+  get "/api/cache/warehouses" do
+    query = conn.params["q"] || conn.params["query"] || ""
+    limit = parse_limit(conn.params["limit"])
+    warehouses = Cache.search_warehouses(query, limit)
+    send_json(conn, %{ok: true, warehouses: warehouses})
+  end
+
+  get "/api/cache/stock_drafts" do
+    drafts = Cache.list_stock_drafts()
+    send_json(conn, %{ok: true, stock_drafts: drafts})
+  end
+
+  get "/api/cache/bins" do
+    item_code = conn.params["item_code"] || ""
+    bins =
+      if item_code == "" do
+        Cache.list_bins()
+      else
+        case Cache.warehouses_for_item(item_code) do
+          {:ok, _} ->
+            Cache.list_bins()
+            |> Enum.filter(fn bin -> bin.item_code == item_code end)
+          :no_cache -> []
+        end
+      end
+    send_json(conn, %{ok: true, bins: bins})
+  end
+
+  get "/api/epc/exists" do
+    epc = conn.params["epc"] || ""
+    exists = if epc == "", do: false, else: EpcRegistry.exists?(epc)
+    send_json(conn, %{ok: true, epc: epc, exists: exists})
+  end
+
+  get "/api/epc/check" do
+    epc = conn.params["epc"] || ""
+    local_exists = if epc == "", do: false, else: EpcRegistry.exists?(epc)
+    erp_exists =
+      if epc == "" do
+        false
+      else
+        case ErpClient.epc_exists?(epc) do
+          {:ok, _} -> true
+          :not_found -> false
+          _ -> false
+        end
+      end
+    send_json(conn, %{ok: true, epc: epc, local_exists: local_exists, erp_exists: erp_exists})
+  end
+
+  post "/api/epc/register" do
+    attrs = conn.body_params || %{}
+    epc = attrs["epc"] || ""
+    if epc == "" do
+      send_json(conn, %{ok: false, error: "epc missing"})
+    else
+      _ = EpcRegistry.register(epc, attrs["source"] || "core", attrs["status"] || "used")
+      send_json(conn, %{ok: true})
+    end
+  end
+
+  post "/api/sync/records" do
+    records = conn.body_params || []
+    case sync_records(records) do
+      :ok -> send_json(conn, %{ok: true})
+      {:error, reason} -> send_json(conn, %{ok: false, error: reason})
+    end
+  end
+
+  match _ do
+    send_resp(conn, 404, "not found")
+  end
+
+  defp sync_records(records) when is_list(records) do
+    Enum.each(records, fn record ->
+      ErpClient.create_draft(%{
+        "device_id" => record["DeviceId"] || record["device_id"],
+        "product_id" => record["ProductId"] || record["product_id"],
+        "weight_kg" => record["Weight"] || record["weight"],
+        "epc_code" => record["EpcCode"] || record["epc_code"],
+        "status" => "Synced"
+      })
+    end)
+
+    :ok
+  end
+
+  defp sync_records(_), do: {:error, "invalid payload"}
+
+  defp send_json(conn, data) do
+    body = Jason.encode!(data)
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, body)
+  end
+
+  defp parse_limit(value) do
+    case Integer.parse(to_string(value || "")) do
+      {n, _} when n > 0 and n <= 200 -> n
+      _ -> 50
+    end
+  end
+end

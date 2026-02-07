@@ -1,0 +1,545 @@
+# ============================================
+# TITAN - CI/CD Pipelines
+# ============================================
+# File: .github/workflows/ci.yml
+# ============================================
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  ELIXIR_VERSION: '1.16'
+  OTP_VERSION: '26'
+
+jobs:
+  # C# Core Build & Test
+  core-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./src/Titan.Core
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+    
+    - name: Restore dependencies
+      run: dotnet restore
+    
+    - name: Build
+      run: dotnet build --no-restore --configuration Release
+    
+    - name: Test
+      run: dotnet test --no-build --verbosity normal
+    
+    - name: Code Coverage
+      run: |
+        dotnet test --collect:"XPlat Code Coverage" --results-directory ./coverage
+    
+    - name: Upload coverage
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage/**/coverage.cobertura.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  # Elixir Bridge Build & Test
+  bridge-build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    defaults:
+      run:
+        working-directory: ./titan_bridge
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        elixir-version: ${{ env.ELIXIR_VERSION }}
+        otp-version: ${{ env.OTP_VERSION }}
+    
+    - name: Restore dependencies cache
+      uses: actions/cache@v3
+      with:
+        path: deps
+        key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+        restore-keys: ${{ runner.os }}-mix-
+    
+    - name: Install dependencies
+      run: mix deps.get
+    
+    - name: Compile
+      run: mix compile --warnings-as-errors
+    
+    - name: Run tests
+      run: mix test
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost/titan_test
+    
+    - name: Check formatting
+      run: mix format --check-formatted
+    
+    - name: Run Credo
+      run: mix credo --strict
+    
+    - name: Run Dialyzer
+      run: mix dialyzer --halt-exit-status
+
+  # Security Scan
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    # C# Security Scan
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+    
+    - name: Run security scan (C#)
+      run: |
+        dotnet tool install --global security-scan
+        security-scan ./src/Titan.sln
+    
+    # Elixir Security Scan
+    - name: Setup Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        elixir-version: ${{ env.ELIXIR_VERSION }}
+        otp-version: ${{ env.OTP_VERSION }}
+    
+    - name: Run Sobelow (Elixir)
+      run: |
+        cd titan_bridge
+        mix deps.get
+        mix sobelow --config
+
+  # Docker Build Test
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Core Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./src
+        file: ./src/Titan.Host/Dockerfile
+        push: false
+        tags: titan-core:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Build Bridge Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./titan_bridge
+        file: ./titan_bridge/Dockerfile
+        push: false
+        tags: titan-bridge:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+---
+# ============================================
+# File: .github/workflows/cd-staging.yml
+# ============================================
+name: CD - Staging
+
+on:
+  push:
+    branches: [ develop ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: registry.accord.uz
+  IMAGE_NAME_CORE: titan/core
+  IMAGE_NAME_BRIDGE: titan/bridge
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Login to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.REGISTRY_USERNAME }}
+        password: ${{ secrets.REGISTRY_PASSWORD }}
+    
+    - name: Extract metadata (tags, labels) for Core
+      id: meta-core
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CORE }}
+        tags: |
+          type=ref,event=branch
+          type=sha,prefix=staging-
+    
+    - name: Extract metadata (tags, labels) for Bridge
+      id: meta-bridge
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BRIDGE }}
+        tags: |
+          type=ref,event=branch
+          type=sha,prefix=staging-
+    
+    - name: Build and push Core image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./src
+        file: ./src/Titan.Host/Dockerfile
+        push: true
+        tags: ${{ steps.meta-core.outputs.tags }}
+        labels: ${{ steps.meta-core.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Build and push Bridge image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./titan_bridge
+        file: ./titan_bridge/Dockerfile
+        push: true
+        tags: ${{ steps.meta-bridge.outputs.tags }}
+        labels: ${{ steps.meta-bridge.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy-staging:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.13.0'
+    
+    - name: Configure kubeconfig
+      run: |
+        echo "${{ secrets.KUBECONFIG_STAGING }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+    
+    - name: Deploy to Staging
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        helm upgrade --install titan ./helm/titan \
+          --namespace titan-staging \
+          --create-namespace \
+          --set core.image.tag=staging-${{ github.sha }} \
+          --set bridge.image.tag=staging-${{ github.sha }} \
+          --set core.secrets.connectionString="${{ secrets.STAGING_DB_CONNECTION }}" \
+          --set bridge.secrets.databaseUrl="${{ secrets.STAGING_BRIDGE_DB_URL }}" \
+          --set ingress.hosts[0].host=staging.titan.accord.uz \
+          --wait \
+          --timeout 10m
+    
+    - name: Run smoke tests
+      run: |
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=titan -n titan-staging --timeout=300s
+        
+        # Health check
+        curl -f https://staging.titan.accord.uz/api/health || exit 1
+        
+    - name: Notify Slack
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#titan-deployments'
+        text: 'Staging deployment ${{ job.status }}'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+---
+# ============================================
+# File: .github/workflows/cd-production.yml
+# ============================================
+name: CD - Production
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy'
+        required: true
+        default: 'latest'
+
+env:
+  REGISTRY: registry.accord.uz
+  IMAGE_NAME_CORE: titan/core
+  IMAGE_NAME_BRIDGE: titan/bridge
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Login to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.REGISTRY_USERNAME }}
+        password: ${{ secrets.REGISTRY_PASSWORD }}
+    
+    - name: Extract version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        elif [ "${{ github.ref_type }}" = "tag" ]; then
+          echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        else
+          echo "VERSION=latest" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Build and push Core image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./src
+        file: ./src/Titan.Host/Dockerfile
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CORE }}:${{ steps.version.outputs.VERSION }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_CORE }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Build and push Bridge image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./titan_bridge
+        file: ./titan_bridge/Dockerfile
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BRIDGE }}:${{ steps.version.outputs.VERSION }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BRIDGE }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy-production:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.13.0'
+    
+    - name: Configure kubeconfig
+      run: |
+        echo "${{ secrets.KUBECONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+    
+    - name: Extract version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        elif [ "${{ github.ref_type }}" = "tag" ]; then
+          echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        else
+          echo "VERSION=latest" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Pre-deployment check
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Check if previous deployment is healthy
+        kubectl get pods -n titan-production -l app.kubernetes.io/name=titan
+        
+        # Check database connectivity
+        kubectl run db-check --rm -i --restart=Never \
+          --image=postgres:16 \
+          --env="PGPASSWORD=${{ secrets.PROD_DB_PASSWORD }}" \
+          -- psql -h postgres.titan-production.svc.cluster.local -U titan -d titan_production -c "SELECT 1"
+    
+    - name: Deploy to Production (Canary)
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Canary deployment (10% traffic)
+        helm upgrade --install titan-canary ./helm/titan \
+          --namespace titan-production \
+          --set core.enabled=true \
+          --set core.replicaCount=1 \
+          --set core.image.tag=${{ steps.version.outputs.VERSION }} \
+          --set bridge.enabled=true \
+          --set bridge.replicaCount=1 \
+          --set bridge.image.tag=${{ steps.version.outputs.VERSION }} \
+          --set ingress.enabled=false \
+          --set core.secrets.connectionString="${{ secrets.PROD_DB_CONNECTION }}" \
+          --set bridge.secrets.databaseUrl="${{ secrets.PROD_BRIDGE_DB_URL }}" \
+          --set bridge.secrets.secretKeyBase="${{ secrets.PROD_SECRET_KEY_BASE }}" \
+          --set bridge.secrets.sessionEncryptionKey="${{ secrets.PROD_SESSION_KEY }}" \
+          --set bridge.secrets.telegramBotToken="${{ secrets.PROD_TELEGRAM_TOKEN }}" \
+          --wait \
+          --timeout 10m
+    
+    - name: Canary health check
+      run: |
+        echo "Waiting for canary deployment..."
+        sleep 60
+        
+        # Check canary pod health
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=titan-canary -n titan-production --timeout=300s
+        
+        # Run integration tests against canary
+        # curl -f http://canary-service/health
+    
+    - name: Deploy to Production (Full)
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        helm upgrade --install titan ./helm/titan \
+          --namespace titan-production \
+          --set core.image.tag=${{ steps.version.outputs.VERSION }} \
+          --set bridge.image.tag=${{ steps.version.outputs.VERSION }} \
+          --set core.secrets.connectionString="${{ secrets.PROD_DB_CONNECTION }}" \
+          --set bridge.secrets.databaseUrl="${{ secrets.PROD_BRIDGE_DB_URL }}" \
+          --set bridge.secrets.secretKeyBase="${{ secrets.PROD_SECRET_KEY_BASE }}" \
+          --set bridge.secrets.sessionEncryptionKey="${{ secrets.PROD_SESSION_KEY }}" \
+          --set bridge.secrets.telegramBotToken="${{ secrets.PROD_TELEGRAM_TOKEN }}" \
+          --set bridge.secrets.erpApiKey="${{ secrets.PROD_ERP_API_KEY }}" \
+          --set bridge.secrets.erpApiSecret="${{ secrets.PROD_ERP_API_SECRET }}" \
+          --wait \
+          --timeout 15m
+    
+    - name: Post-deployment verification
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Wait for rollout
+        kubectl rollout status deployment/titan-core -n titan-production --timeout=300s
+        kubectl rollout status deployment/titan-bridge -n titan-production --timeout=300s
+        
+        # Health checks
+        kubectl get pods -n titan-production
+        
+        # External health check
+        curl -f https://titan.accord.uz/api/health
+        curl -f https://api.titan.accord.uz/health
+    
+    - name: Cleanup canary
+      if: always()
+      run: |
+        export KUBECONFIG=kubeconfig
+        helm uninstall titan-canary -n titan-production || true
+    
+    - name: Notify Slack
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#titan-production'
+        text: 'Production deployment ${{ steps.version.outputs.VERSION }} - ${{ job.status }}'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    
+    - name: Create GitHub Release
+      if: github.ref_type == 'tag'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ./helm/titan-${{ steps.version.outputs.VERSION }}.tgz
+        generate_release_notes: true
+
+---
+# ============================================
+# File: .github/workflows/nightly-cleanup.yml
+# ============================================
+name: Nightly Cleanup
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Run at 2 AM daily
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Cleanup old images
+      uses: actions/delete-package-versions@v4
+      with:
+        package-name: 'titan/core'
+        package-type: 'container'
+        min-versions-to-keep: 10
+        delete-only-untagged-versions: true
+    
+    - name: Cleanup old workflow runs
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        retain_days: 30
+        keep_minimum_runs: 10
