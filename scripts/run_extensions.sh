@@ -990,11 +990,11 @@ if [[ "${LCE_SHOW_ZEBRA_TUI:-0}" == "1" ]] && [[ -t 0 ]] && [[ -t 1 ]]; then
   # LCE va Zebra xizmatlari ishga tushayotganini ko'rsatish (quiet mode).
   if [[ "${LCE_QUIET}" == "1" ]]; then
     wait_for_url_with_spinner "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}" "LCE ishga tushmoqda" || true
-    wait_for_url_with_spinner "${LCE_ZEBRA_URL}/api/status" 240 0.25 "Zebra ishga tushmoqda" || true
-  else
-    wait_for_url "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}" >/dev/null 2>&1 || true
-    wait_for_url "${LCE_ZEBRA_URL}/api/status" 240 0.25 >/dev/null 2>&1 || true
-  fi
+    wait_for_url_with_spinner "${LCE_ZEBRA_URL}/api/v1/health" 240 0.25 "Zebra ishga tushmoqda" || true
+	  else
+	    wait_for_url "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}" >/dev/null 2>&1 || true
+	    wait_for_url "${LCE_ZEBRA_URL}/api/v1/health" 240 0.25 >/dev/null 2>&1 || true
+	  fi
 
   if start_zebra_tui; then
     SHOW_BANNER=0
