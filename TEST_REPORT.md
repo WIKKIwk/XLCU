@@ -18,6 +18,12 @@ cd LCE
 # 1) Sanity checks (paths + Docker daemon + runner script syntax)
 make doctor
 
+# 1.1) Auto-fetch child repos when missing (safe dry-run)
+# This verifies fresh installs don't need manual clones.
+tmp="$(mktemp -d)"
+LCE_WORK_DIR="$tmp" LCE_CHILDREN_TARGET=zebra LCE_DRY_RUN=1 LCE_QUIET=1 bash scripts/run_extensions.sh
+LCE_WORK_DIR="$tmp" LCE_CHILDREN_TARGET=rfid  LCE_DRY_RUN=1 LCE_QUIET=1 bash scripts/run_extensions.sh
+
 # 2) Ensure the dev runtime image builds on hosts without buildx/BuildKit
 DOCKER_BUILDKIT=0 docker build \
   -t lce-bridge-dev:elixir-1.16.2-dotnet-10.0 \
@@ -38,9 +44,11 @@ curl -fsS http://127.0.0.1:18000/api/status  # when Zebra is running
 ## Results (This Run)
 
 1. `make doctor`: OK
+2. Auto-fetch (dry-run):
+   - Zebra repo cloned (only when requested) and path resolved: OK
+   - RFID repo cloned (only when requested) and path resolved: OK
 2. `DOCKER_BUILDKIT=0 docker build ...Dockerfile.dev`: OK (build completed successfully)
 3. `mix compile`: OK (warnings only)
 4. `GET /api/health`: OK (`{"ok":true,...}`)
 5. `GET /api/status`: OK (service up; config values are masked by the API)
 6. RFID `GET /api/status`: OK (RFID service responded; `connected` may be `false` if no reader is attached)
-
