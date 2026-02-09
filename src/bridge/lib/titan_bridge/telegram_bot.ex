@@ -130,17 +130,24 @@ defmodule TitanBridge.Telegram.Bot do
         delete_message(token, chat_id, msg_id)
         case SettingsStore.get() do
           %{erp_url: url, erp_token: erp_token}
-          when is_binary(url) and String.trim(url) != "" and is_binary(erp_token) and byte_size(erp_token) > 0 ->
-            clear_temp(chat_id)
-            set_state(chat_id, "ready")
+          when is_binary(url) and is_binary(erp_token) and byte_size(erp_token) > 0 ->
+            url = String.trim(url)
 
-            send_message(
-              token,
-              chat_id,
-              "Sozlamalar topildi (ERP: #{String.trim(url)}).\n" <>
-                "Davom etish uchun /batch buyrug'ini bering.\n" <>
-                "Qayta sozlash kerak bo'lsa /start ni yuboring va yangi ERP ma'lumotlarini kiriting."
-            )
+            if url != "" do
+              clear_temp(chat_id)
+              set_state(chat_id, "ready")
+
+              send_message(
+                token,
+                chat_id,
+                "Sozlamalar topildi (ERP: #{url}).\n" <>
+                  "Davom etish uchun /batch buyrug'ini bering.\n" <>
+                  "Qayta sozlash kerak bo'lsa /start ni yuboring va yangi ERP ma'lumotlarini kiriting."
+              )
+            else
+              set_state(chat_id, "awaiting_erp_url")
+              setup_prompt(token, chat_id, "ERP manzilini kiriting:")
+            end
 
           _ ->
             set_state(chat_id, "awaiting_erp_url")
