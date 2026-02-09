@@ -22,6 +22,10 @@ defmodule TitanBridge.ErpSyncWorker do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   end
 
+  def sync_now(full_refresh \\ true) do
+    GenServer.cast(__MODULE__, {:sync_now, full_refresh})
+  end
+
   def handle_webhook(payload) when is_map(payload) do
     GenServer.cast(__MODULE__, {:webhook, payload})
   end
@@ -36,6 +40,15 @@ defmodule TitanBridge.ErpSyncWorker do
   @impl true
   def handle_cast({:webhook, payload}, state) do
     process_webhook(payload)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:sync_now, full_refresh}, state) do
+    if configured?() do
+      sync_all(full_refresh)
+    end
+
     {:noreply, state}
   end
 
@@ -116,6 +129,8 @@ defmodule TitanBridge.ErpSyncWorker do
         update_stock_drafts(rows, full_refresh)
         maybe_put_sync_state("stock_drafts_modified", rows)
     end
+    # EPC → draft mapping yangilash (lokal cache dan)
+    build_epc_draft_mapping()
   end
 
   defp fetch_rows(fun, since) do
@@ -194,6 +209,91 @@ defmodule TitanBridge.ErpSyncWorker do
     end
 
     broadcast(:stock_drafts, length(maps))
+  end
+
+  # Draftlardan EPC → draft mapping yaratish
+  # Har bir draft uchun to'liq doc (items + serial_no) olib kelinadi
+  defp build_epc_draft_mapping do
+    drafts = Cache.list_stock_drafts()
+    mappings =
+      drafts
+      |> Enum.flat_map(fn draft ->
+        # data fieldida to'liq doc bo'lishi mumkin, yoki faqat asosiy fieldlar
+        # Agar items yo'q bo'lsa — ERPNext dan olib kelamiz
+        doc = fetch_full_doc(draft)
+        items = doc["items"] || []
+
+        remark_epc = extract_epc_from_remarks(doc["remarks"])
+
+        candidates =
+          (if remark_epc, do: [remark_epc], else: []) ++
+            Enum.flat_map(items, fn item ->
+              barcode = String.trim(item["barcode"] || "")
+              batch = String.trim(item["batch_no"] || "")
+              serial = String.trim(item["serial_no"] || "")
+
+              serials =
+                if serial != "" do
+                  serial
+                  |> String.split(~r/[\s,]+/, trim: true)
+                  |> Enum.map(&String.trim/1)
+                  |> Enum.filter(&(&1 != ""))
+                else
+                  []
+                end
+
+              # Prefer barcode for new flow, but keep batch/serial for legacy drafts.
+              Enum.filter([barcode, batch], &(&1 != "")) ++ serials
+            end)
+
+        candidates
+        |> Enum.map(&normalize_epc/1)
+        |> Enum.filter(&(&1 != ""))
+        |> Enum.uniq()
+        |> Enum.map(fn epc -> {epc, %{name: draft.name, doc: doc}} end)
+      end)
+
+    Cache.put_epc_draft_mapping(mappings)
+  end
+
+  defp extract_epc_from_remarks(remarks) when is_binary(remarks) do
+    text =
+      remarks
+      |> String.upcase()
+      |> String.replace(~r/[^0-9A-F]+/, " ")
+
+    case Regex.run(~r/\b([0-9A-F]{12,})\b/, text) do
+      [_, epc] -> epc
+      _ -> nil
+    end
+  end
+
+  defp extract_epc_from_remarks(_), do: nil
+
+  defp fetch_full_doc(draft) do
+    # Avval data fieldidan tekshiramiz — items bormi?
+    data = draft.data || %{}
+    if is_list(data["items"]) and data["items"] != [] do
+      data
+    else
+      # ERPNext dan to'liq doc olib kelamiz
+      case ErpClient.get_doc("Stock Entry", draft.name) do
+        {:ok, doc} ->
+          # data fieldini yangilaymiz (keyingi safar ERPNext ga bormaslik uchun)
+          now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+          Repo.update_all(
+            from(d in StockDraft, where: d.name == ^draft.name),
+            set: [data: doc, updated_at: now]
+          )
+          doc
+        {:error, _} ->
+          data
+      end
+    end
+  end
+
+  defp normalize_epc(raw) do
+    raw |> String.trim() |> String.upcase() |> String.replace(~r/[^0-9A-F]/, "")
   end
 
   defp process_webhook(payload) do

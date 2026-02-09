@@ -6,7 +6,6 @@ defmodule TitanBridge.SettingsStore do
   - `upsert/1`    — create or update settings from map
   - `masked/0`    — settings with tokens partially hidden (for API response)
   """
-  import Ecto.Query
   alias TitanBridge.{Repo, Settings}
 
   @default_id 1
@@ -37,6 +36,7 @@ defmodule TitanBridge.SettingsStore do
           telegram_token: Settings.mask(settings.telegram_token),
           zebra_url: settings.zebra_url,
           rfid_url: settings.rfid_url,
+          rfid_telegram_token: Settings.mask(settings.rfid_telegram_token),
           device_id: settings.device_id,
           warehouse: settings.warehouse
         }

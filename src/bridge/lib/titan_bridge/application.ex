@@ -12,6 +12,8 @@ defmodule TitanBridge.Application do
       ErpSyncWorker  - Periodic ERPNext data sync (items, warehouses, bins)
       Children       - OS process manager (spawns zebra_v1, rfid)
       Telegram.Bot   - Telegram long-poll bot (primary operator UI)
+      RfidListener   - RFID tag polling (detects scanned tags)
+      Telegram.RfidBot - RFID Telegram bot (auto-submit drafts)
       Plug.Cowboy    - HTTP/WS server on :4000
   """
   use Application
@@ -26,6 +28,8 @@ defmodule TitanBridge.Application do
       TitanBridge.ErpSyncWorker,
       TitanBridge.Children,
       TitanBridge.Telegram.Bot,
+      TitanBridge.RfidListener,
+      TitanBridge.Telegram.RfidBot,
       {Plug.Cowboy, scheme: :http, plug: TitanBridge.Web.Router, options: [port: http_port()]}
     ]
 

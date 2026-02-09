@@ -1,4 +1,5 @@
 defmodule TitanBridge.SyncState do
+  import Ecto.Query
   alias TitanBridge.Repo
   alias TitanBridge.Cache.SyncState, as: State
 
@@ -15,4 +16,16 @@ defmodule TitanBridge.SyncState do
       conflict_target: :key
     )
   end
+
+  def reset_all do
+    Repo.delete_all(State)
+    :ok
+  end
+
+  def reset(keys) when is_list(keys) do
+    from(s in State, where: s.key in ^keys) |> Repo.delete_all()
+    :ok
+  end
+
+  def reset(key) when is_binary(key), do: reset([key])
 end

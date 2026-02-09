@@ -20,6 +20,15 @@ config :titan_bridge, TitanBridge.Telegram.Bot,
   poll_interval_ms: String.to_integer(System.get_env("LCE_TG_POLL_MS", "1200")),
   poll_timeout_sec: String.to_integer(System.get_env("LCE_TG_TIMEOUT_SEC", "25"))
 
+# --- RFID Telegram Bot ---
+config :titan_bridge, TitanBridge.Telegram.RfidBot,
+  poll_interval_ms: String.to_integer(System.get_env("LCE_RFID_TG_POLL_MS", "1200")),
+  poll_timeout_sec: String.to_integer(System.get_env("LCE_RFID_TG_TIMEOUT_SEC", "25"))
+
+# --- RFID Listener ---
+config :titan_bridge, TitanBridge.RfidListener,
+  poll_interval_ms: String.to_integer(System.get_env("LCE_RFID_LISTEN_MS", "1000"))
+
 # --- ERP Sync ---
 # poll_interval_ms: how often to sync with ERPNext (ms)
 # full_refresh_every: do a full (not incremental) sync every N cycles

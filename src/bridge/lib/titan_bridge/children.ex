@@ -103,7 +103,6 @@ defmodule TitanBridge.Children do
   defp filter_children(children) do
     case child_targets() do
       :all -> children
-      [] -> children
       targets ->
         Enum.filter(children, fn child ->
           name = child.name |> to_string() |> String.downcase()
@@ -116,11 +115,15 @@ defmodule TitanBridge.Children do
     case System.get_env("LCE_CHILDREN_TARGET") do
       nil -> :all
       "" -> :all
+      "all" -> :all
       raw ->
-        raw
-        |> String.split([",", " "], trim: true)
-        |> Enum.map(&String.downcase/1)
-        |> Enum.filter(&(&1 in ["zebra", "rfid"]))
+        targets =
+          raw
+          |> String.split([",", " "], trim: true)
+          |> Enum.map(&String.downcase/1)
+          |> Enum.filter(&(&1 in ["zebra", "rfid"]))
+
+        if targets == [], do: :all, else: targets
     end
   end
 

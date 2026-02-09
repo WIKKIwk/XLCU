@@ -18,6 +18,7 @@ defmodule TitanBridge.Cache do
   @warehouses_table :lce_cache_warehouses
   @bins_table :lce_cache_bins
   @drafts_table :lce_cache_stock_drafts
+  @epc_drafts_table :lce_cache_epc_drafts
   @meta_table :lce_cache_meta
 
   def ensure_tables do
@@ -25,6 +26,7 @@ defmodule TitanBridge.Cache do
     create_table(@warehouses_table)
     create_table(@bins_table)
     create_table(@drafts_table)
+    create_table(@epc_drafts_table)
     create_table(@meta_table)
     :ok
   end
@@ -139,6 +141,36 @@ defmodule TitanBridge.Cache do
     end
   end
 
+  @doc """
+  EPC → draft mapping ni yangilaydi.
+  Har bir draft uchun items dagi serial_no (EPC) larni map qiladi.
+  Format: %{normalized_epc => %{name: "SE-001", doc: full_doc}}
+  """
+  def put_epc_draft_mapping(mappings) when is_list(mappings) do
+    ensure_tables()
+    :ets.delete_all_objects(@epc_drafts_table)
+    Enum.each(mappings, fn {epc, draft_info} ->
+      :ets.insert(@epc_drafts_table, {epc, draft_info})
+    end)
+  end
+
+  @doc """
+  EPC bo'yicha lokal cache dan draft qidiradi.
+  Qaytaradi: {:ok, draft_info} | :not_found
+  """
+  def find_draft_by_epc(epc) when is_binary(epc) do
+    ensure_tables()
+    case :ets.lookup(@epc_drafts_table, epc) do
+      [{^epc, draft_info}] -> {:ok, draft_info}
+      _ -> :not_found
+    end
+  end
+
+  def delete_epc_mapping(epc) when is_binary(epc) do
+    ensure_tables()
+    :ets.delete(@epc_drafts_table, epc)
+  end
+
   def search_items(query, limit \\ 50) do
     q = String.downcase(String.trim(query || ""))
     items = list_items()
@@ -187,16 +219,65 @@ defmodule TitanBridge.Cache do
     end
   end
 
+  @doc """
+  Item bo'yicha omborlar kesimida actual_qty map qaytaradi (0 bo'lsa ham).
+
+  Qaytaradi:
+    {:ok, %{warehouse_name => actual_qty}}
+    :no_cache (agar lokal bin cache umuman bo'sh bo'lsa)
+  """
+  def qty_map_for_item(item_code) when is_binary(item_code) do
+    bins = bins_for_item(item_code)
+
+    if bins == [] do
+      :no_cache
+    else
+      qty_map =
+        bins
+        |> Enum.filter(fn bin -> is_binary(bin.warehouse) end)
+        |> Enum.reduce(%{}, fn bin, acc ->
+          Map.update(acc, bin.warehouse, bin.actual_qty || 0, &(&1 + (bin.actual_qty || 0)))
+        end)
+
+      {:ok, qty_map}
+    end
+  end
+
+  @doc """
+  Bitta item+warehouse uchun actual_qty.
+  Qaytaradi: float/int | :unknown (agar lokal bin cache da topilmasa)
+  """
+  def bin_qty(item_code, warehouse)
+      when is_binary(item_code) and is_binary(warehouse) do
+    ensure_tables()
+    key = {item_code, warehouse}
+
+    case :ets.lookup(@bins_table, key) do
+      [{^key, bin}] -> bin.actual_qty || 0
+      _ -> :unknown
+    end
+  end
+
   defp bins_for_item(item_code) do
     ensure_tables()
-    case :ets.match_object(@bins_table, {{item_code, :_}, :_}) do
-      [] ->
+    rows = :ets.match_object(@bins_table, {{item_code, :_}, :_})
+
+    cond do
+      rows != [] ->
+        Enum.map(rows, fn {_k, v} -> v end)
+
+      # Only load from DB when the whole table is empty. If a specific item has no bins,
+      # re-loading the full table repeatedly becomes very expensive (inline queries etc).
+      :ets.info(@bins_table, :size) == 0 ->
         _ = load_bins()
+
         case :ets.match_object(@bins_table, {{item_code, :_}, :_}) do
           [] -> []
-          rows -> Enum.map(rows, fn {_k, v} -> v end)
+          rows2 -> Enum.map(rows2, fn {_k, v} -> v end)
         end
-      rows -> Enum.map(rows, fn {_k, v} -> v end)
+
+      true ->
+        []
     end
   end
 

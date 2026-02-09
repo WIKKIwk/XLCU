@@ -15,6 +15,32 @@ defmodule TitanBridge.EpcRegistry do
     )
   end
 
+  @doc """
+  Faqat yangi EPC ni yozadi. Dublikat bo'lsa hech narsa qilmaydi.
+  Soniyasiga 20+ marta bir xil EPC kelishi mumkin — faqat birinchisi yoziladi.
+  Qaytaradi:
+    {:ok, :new}    — yangi EPC, birinchi marta ko'rildi
+    {:ok, :exists} — allaqachon mavjud, skip
+  """
+  def register_once(epc, source \\ "rfid") when is_binary(epc) do
+    if exists?(epc) do
+      {:ok, :exists}
+    else
+      case Repo.insert(
+        %EpcRecord{epc: epc, source: source, status: "scanned"},
+        on_conflict: :nothing,
+        conflict_target: :epc
+      ) do
+        {:ok, _} -> {:ok, :new}
+        _ -> {:ok, :exists}
+      end
+    end
+  end
+
+  def mark_submitted(epc) when is_binary(epc) do
+    register(epc, "rfid", "submitted")
+  end
+
   def exists?(epc) when is_binary(epc) do
     Repo.get(EpcRecord, epc) != nil
   end

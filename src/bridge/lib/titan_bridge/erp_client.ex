@@ -19,6 +19,122 @@ defmodule TitanBridge.ErpClient do
 
   alias TitanBridge.SettingsStore
 
+  @doc """
+  Telegram/UI uchun ERP xatolarini qisqa va tushunarli ko'rinishga keltiradi.
+
+  Masalan:
+    - "ERP POST failed: 403 {...}" → "HTTP 403 (POST): Not permitted"
+    - network xatolari            → "request_error: ..."
+  """
+  def human_error(reason) do
+    text =
+      cond do
+        is_binary(reason) -> reason
+        true -> inspect(reason)
+      end
+
+    case parse_http_failed(text) do
+      {:ok, method, status, body} ->
+        detail = extract_frappe_error(body) || short_body(body)
+        "HTTP #{status} (#{method}): #{detail}"
+
+      :error ->
+        case String.trim(text) do
+          "" -> "unknown error"
+          other -> String.slice(other, 0, 240)
+        end
+    end
+  end
+
+  defp parse_http_failed(text) when is_binary(text) do
+    # "ERP POST failed: 403 {json...}"
+    case Regex.run(~r/^ERP\s+(GET|POST|PUT)\s+failed:\s+(\d+)\s+(.*)$/s, text) do
+      [_, method, status_str, body] ->
+        status =
+          case Integer.parse(status_str) do
+            {n, _} -> n
+            _ -> 0
+          end
+
+        {:ok, method, status, body}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp extract_frappe_error(body) when is_binary(body) do
+    with {:ok, decoded} <- Jason.decode(body) do
+      server_msg =
+        case decoded["_server_messages"] do
+          msgs when is_binary(msgs) ->
+            case Jason.decode(msgs) do
+              {:ok, [first | _]} ->
+                extract_server_message(first) || extract_server_message_text(first)
+
+              _ ->
+                nil
+            end
+
+          _ ->
+            nil
+        end
+
+      msg =
+        cond do
+          is_binary(server_msg) and String.trim(server_msg) != "" ->
+            server_msg
+
+          is_binary(decoded["message"]) and String.trim(decoded["message"]) != "" ->
+            decoded["message"]
+
+          true ->
+            nil
+        end
+
+      exc = decoded["exc_type"] || decoded["exception"]
+
+      cond do
+        is_binary(exc) and is_binary(msg) ->
+          "#{exc}: #{msg}" |> String.replace(~r/\s+/, " ") |> String.slice(0, 220)
+
+        is_binary(msg) ->
+          msg |> String.replace(~r/\s+/, " ") |> String.slice(0, 220)
+
+        true ->
+          nil
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp extract_frappe_error(_), do: nil
+
+  defp extract_server_message(msg_json) when is_binary(msg_json) do
+    case Jason.decode(msg_json) do
+      {:ok, %{"message" => msg}} when is_binary(msg) -> msg
+      _ -> nil
+    end
+  end
+
+  defp extract_server_message(_), do: nil
+
+  defp extract_server_message_text(msg) when is_binary(msg) do
+    # If it's not JSON, return as-is (trimmed).
+    m = String.trim(msg)
+    if m == "", do: nil, else: m
+  end
+
+  defp extract_server_message_text(_), do: nil
+
+  defp short_body(body) when is_binary(body) do
+    body
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> String.slice(0, 220)
+  end
+
   def list_items_modified(since \\ nil) do
     filters =
       build_modified_filters("Item", since) ++
@@ -111,19 +227,129 @@ defmodule TitanBridge.ErpClient do
   end
 
   def create_draft(attrs) do
+    epc = String.trim(attrs["epc_code"] || "")
+
+    item =
+      %{
+        "item_code" => attrs["product_id"],
+        "qty" => attrs["weight_kg"],
+        "s_warehouse" => attrs["warehouse"]
+      }
+      |> then(fn m ->
+        if epc == "" do
+          m
+        else
+          # EPC should live in the Stock Entry item row for easy scanning in ERPNext UI.
+          # Using `barcode` avoids Serial/Batch validation.
+          Map.put(m, "barcode", epc)
+        end
+      end)
+
     stock_entry = %{
       "doctype" => "Stock Entry",
-      "stock_entry_type" => "Material Receipt",
-      "to_warehouse" => attrs["warehouse"],
-      "items" => [
-        %{
-          "item_code" => attrs["product_id"],
-          "qty" => attrs["weight_kg"],
-          "t_warehouse" => attrs["warehouse"]
-        }
-      ]
+      # Our flow removes stock from the selected warehouse (draft = docstatus 0).
+      "stock_entry_type" => "Material Issue",
+      "from_warehouse" => attrs["warehouse"],
+      "items" => [item]
     }
-    post_doc("Stock Entry", stock_entry)
+
+    case post_doc("Stock Entry", stock_entry) do
+      {:ok, %{"data" => %{"name" => name}} = resp} when is_binary(name) and name != "" ->
+        # Best-effort: keep ERP-side EPC registry for uniqueness / audits.
+        _ =
+          if epc != "" do
+            device_id = attrs["device_id"] || get_config()[:device_id] || "LCE"
+
+            post_doc("LCE Draft", %{
+              "device_id" => device_id,
+              "product_id" => attrs["product_id"],
+              "warehouse" => attrs["warehouse"],
+              "weight_kg" => attrs["weight_kg"],
+              "epc_code" => epc,
+              "status" => "Draft",
+              "message" => "Stock Entry: #{name}"
+            })
+          else
+            :ok
+          end
+
+        {:ok, resp}
+
+      other ->
+        other
+    end
+  end
+
+  def submit_stock_entry(name) when is_binary(name) do
+    put_doc("Stock Entry", name, %{"docstatus" => 1})
+  end
+
+  def list_drafts_with_epc do
+    case list_stock_drafts_modified(nil) do
+      {:ok, drafts} ->
+        results =
+          drafts
+          |> Enum.map(fn draft ->
+            case get_doc("Stock Entry", draft["name"]) do
+              {:ok, doc} ->
+                items = doc["items"] || []
+
+                epcs =
+                  Enum.flat_map(items, fn item ->
+                    barcode = String.trim(item["barcode"] || "")
+                    batch = String.trim(item["batch_no"] || "")
+                    serial = String.trim(item["serial_no"] || "")
+
+                    serials =
+                      if serial != "" do
+                        # serial_no can contain multiple values separated by whitespace/newlines
+                        serial
+                        |> String.split(~r/[\s,]+/, trim: true)
+                        |> Enum.map(&String.trim/1)
+                        |> Enum.filter(&(&1 != ""))
+                      else
+                        []
+                      end
+
+                    cond do
+                      barcode != "" or batch != "" or serials != [] ->
+                        Enum.filter([barcode, batch], &(&1 != "")) ++ serials
+
+                      true ->
+                        []
+                    end
+                  end)
+
+                epcs =
+                  case extract_epc_from_remarks(doc["remarks"]) do
+                    nil -> epcs
+                    remark_epc -> [remark_epc | epcs]
+                  end
+
+                %{
+                  name: doc["name"],
+                  items: Enum.map(items, fn item ->
+                    %{
+                      item_code: item["item_code"],
+                      qty: item["qty"],
+                      serial_no: item["serial_no"],
+                      batch_no: item["batch_no"],
+                      barcode: item["barcode"],
+                      s_warehouse: item["s_warehouse"]
+                    }
+                  end),
+                  epcs: Enum.uniq(epcs)
+                }
+              {:error, _} -> nil
+            end
+          end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.filter(fn d -> d.epcs != [] end)
+
+        {:ok, results}
+
+      {:error, _} = err -> err
+    end
   end
 
   def upsert_device(attrs) do
@@ -160,6 +386,118 @@ defmodule TitanBridge.ErpClient do
     end
   end
 
+  @doc """
+  EPC bo'yicha draft Stock Entry ni qidiradi.
+
+  Primary key: `batch_no` (recommended).
+  Fallback: `serial_no` (legacy / older drafts).
+
+  Qaytaradi:
+    {:ok, doc}     — topildi (to'liq Stock Entry doc)
+    :not_found     — mos draft yo'q
+    {:error, ...}  — xato
+  """
+  def find_draft_by_serial_no(epc) when is_binary(epc) do
+    with %{erp_url: base, erp_token: token} <- get_config(),
+         true <- valid?(base, token),
+         base <- normalize_base(base) do
+      fields = Jason.encode!(["parent"])
+
+      # 0) Barcode bo'yicha qidirish (asosiy)
+      barcode_filters =
+        Jason.encode!([
+          ["Stock Entry Detail", "barcode", "=", epc],
+          ["Stock Entry", "docstatus", "=", 0]
+        ])
+
+      barcode_url =
+        base <>
+          "/api/resource/Stock%20Entry%20Detail?fields=" <>
+          URI.encode(fields) <>
+          "&filters=" <>
+          URI.encode(barcode_filters) <>
+          "&limit_page_length=1"
+
+      case http_get(barcode_url, token) do
+        {:ok, %{"data" => [%{"parent" => parent} | _]}} ->
+          get_doc("Stock Entry", parent)
+
+        {:error, reason} ->
+          # If barcode field isn't available, ERP may respond with HTTP 417/validation.
+          # Only treat transport errors as fatal.
+          if is_binary(reason) and String.starts_with?(reason, "ERP GET failed:") do
+            :fallback
+          else
+            {:error, reason}
+          end
+
+        _ ->
+          :fallback
+      end
+      |> case do
+        {:ok, _} = ok ->
+          ok
+
+        {:error, _} = err ->
+          err
+
+        :fallback ->
+          # 1) Batch No bo'yicha qidirish (legacy)
+          batch_filters =
+            Jason.encode!([
+              ["Stock Entry Detail", "batch_no", "=", epc],
+              ["Stock Entry", "docstatus", "=", 0]
+            ])
+
+          batch_url =
+            base <>
+              "/api/resource/Stock%20Entry%20Detail?fields=" <>
+              URI.encode(fields) <>
+              "&filters=" <>
+              URI.encode(batch_filters) <>
+              "&limit_page_length=1"
+
+          case http_get(batch_url, token) do
+            {:ok, %{"data" => [%{"parent" => parent} | _]}} ->
+              get_doc("Stock Entry", parent)
+
+            _ ->
+              # 2) Legacy: serial_no ichidan qidirish
+              filters =
+                Jason.encode!([
+                  ["Stock Entry Detail", "serial_no", "like", "%#{epc}%"],
+                  ["Stock Entry", "docstatus", "=", 0]
+                ])
+
+              url =
+                base <>
+                  "/api/resource/Stock%20Entry%20Detail?fields=" <>
+                  URI.encode(fields) <>
+                  "&filters=" <>
+                  URI.encode(filters) <>
+                  "&limit_page_length=1"
+
+              case http_get(url, token) do
+                {:ok, %{"data" => [%{"parent" => parent} | _]}} ->
+                  # To'liq Stock Entry ni olish
+                  get_doc("Stock Entry", parent)
+
+                {:ok, %{"data" => []}} ->
+                  find_draft_by_remarks(base, token, epc)
+
+                {:ok, _} ->
+                  find_draft_by_remarks(base, token, epc)
+
+                {:error, _} = err ->
+                  err
+              end
+          end
+      end
+    else
+      _ -> {:error, "ERP config missing"}
+    end
+  end
+
   def epc_exists?(epc) when is_binary(epc) do
     filters = Jason.encode!([["LCE Draft", "epc_code", "=", epc]])
     fields = Jason.encode!(["name"])
@@ -167,9 +505,13 @@ defmodule TitanBridge.ErpClient do
     with %{erp_url: base, erp_token: token} <- get_config(),
          true <- valid?(base, token),
          base <- normalize_base(base) do
-      url = base <> "/api/resource/LCE%20Draft?fields=" <> URI.encode(fields)
-        <> "&filters=" <> URI.encode(filters)
-        <> "&limit_page_length=1"
+      url =
+        base <>
+          "/api/resource/LCE%20Draft?fields=" <>
+          URI.encode(fields) <>
+          "&filters=" <>
+          URI.encode(filters) <>
+          "&limit_page_length=1"
 
       case http_get(url, token) do
         {:ok, %{"data" => [row | _]}} -> {:ok, row["name"]}
@@ -202,15 +544,16 @@ defmodule TitanBridge.ErpClient do
   defp valid?(_, _), do: false
 
   defp fetch_items(base, token) do
-    filters = Jason.encode!([["Item", "is_stock_item", "=", 1]])
-    fields = Jason.encode!(["name", "item_name", "stock_uom"])
-    url = base <> "/api/resource/Item?fields=" <> URI.encode(fields) <> "&filters=" <> URI.encode(filters) <> "&limit_page_length=200"
-
-    case http_get(url, token) do
-      {:ok, %{"data" => data}} -> {:ok, data}
-      {:ok, _} -> {:error, "Invalid ERP response"}
-      {:error, _} = err -> err
-    end
+    # list_products/1 is a user-facing flow; don't silently cap at 200 rows.
+    fetch_all(
+      base,
+      token,
+      "Item",
+      ["name", "item_name", "stock_uom"],
+      [["Item", "is_stock_item", "=", 1]],
+      0,
+      []
+    )
   end
 
   defp filter_by_warehouse(_base, _token, items, nil), do: {:ok, items}
@@ -315,6 +658,52 @@ defmodule TitanBridge.ErpClient do
       _ -> {:error, "ERP config missing"}
     end
   end
+
+  defp find_draft_by_remarks(base, token, epc) when is_binary(epc) do
+    epc = String.trim(epc)
+
+    if epc == "" do
+      :not_found
+    else
+      filters =
+        Jason.encode!([
+          ["Stock Entry", "remarks", "like", "%#{epc}%"],
+          ["Stock Entry", "docstatus", "=", 0]
+        ])
+
+      fields = Jason.encode!(["name"])
+
+      url =
+        base <>
+          "/api/resource/Stock%20Entry?fields=" <>
+          URI.encode(fields) <>
+          "&filters=" <>
+          URI.encode(filters) <>
+          "&limit_page_length=1"
+
+      case http_get(url, token) do
+        {:ok, %{"data" => [%{"name" => name} | _]}} when is_binary(name) ->
+          get_doc("Stock Entry", name)
+
+        _ ->
+          :not_found
+      end
+    end
+  end
+
+  defp extract_epc_from_remarks(remarks) when is_binary(remarks) do
+    text =
+      remarks
+      |> String.upcase()
+      |> String.replace(~r/[^0-9A-F]+/, " ")
+
+    case Regex.run(~r/\b([0-9A-F]{12,})\b/, text) do
+      [_, epc] -> epc
+      _ -> nil
+    end
+  end
+
+  defp extract_epc_from_remarks(_), do: nil
 
   defp put_doc(doctype, name, attrs) do
     with %{erp_url: base, erp_token: token} <- get_config(),

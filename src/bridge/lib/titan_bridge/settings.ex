@@ -17,12 +17,13 @@ defmodule TitanBridge.Settings do
     field :telegram_token, TitanBridge.Encrypted.Binary
     field :zebra_url, :string
     field :rfid_url, :string
+    field :rfid_telegram_token, TitanBridge.Encrypted.Binary
     field :device_id, :string
     field :warehouse, :string
     timestamps()
   end
 
-  @fields ~w(erp_url erp_token telegram_token zebra_url rfid_url device_id warehouse)a
+  @fields ~w(erp_url erp_token telegram_token zebra_url rfid_url rfid_telegram_token device_id warehouse)a
 
   def changeset(struct, attrs) do
     struct
