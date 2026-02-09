@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LCE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+FETCH_CHILDREN_SCRIPT="${SCRIPT_DIR}/fetch_children.sh"
 
 # This repo historically kept `zebra_v1/` and `rfid/` next to `LCE/`.
 # For portability, auto-detect the "work root" (where logs/cache live) and
@@ -779,7 +780,7 @@ if [[ "${need_zebra}" -eq 1 ]]; then
     echo "  - zebra_v1/" >&2
     echo "  - ERPNext_Zebra_stabil_enterprise_version/" >&2
     echo "Fix options:" >&2
-    echo "  1) Run: bash scripts/fetch_children.sh" >&2
+    echo "  1) Run: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
     echo "  2) Or clone manually:" >&2
     echo "     git clone https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git zebra_v1" >&2
     echo "  3) Or set LCE_ZEBRA_HOST_DIR=/path/to/zebra" >&2
@@ -796,7 +797,7 @@ if [[ "${need_rfid}" -eq 1 ]]; then
     echo "  - rfid/" >&2
     echo "  - ERPNext_UHFReader288_integration/" >&2
     echo "Fix options:" >&2
-    echo "  1) Run: bash scripts/fetch_children.sh" >&2
+    echo "  1) Run: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
     echo "  2) Or clone manually:" >&2
     echo "     git clone https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git rfid" >&2
     echo "  3) Or set LCE_RFID_HOST_DIR=/path/to/rfid" >&2

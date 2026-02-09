@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LCE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+FETCH_CHILDREN_SCRIPT="${SCRIPT_DIR}/fetch_children.sh"
 
 if [[ -d "${LCE_DIR}/../zebra_v1" || -d "${LCE_DIR}/../ERPNext_Zebra_stabil_enterprise_version" || -d "${LCE_DIR}/../rfid" || -d "${LCE_DIR}/../ERPNext_UHFReader288_integration" ]]; then
   WORK_DIR="$(cd -- "${LCE_DIR}/.." && pwd)"
@@ -44,19 +45,19 @@ echo "RFID_DIR:  ${RFID_DIR:-<missing>}"
 
 if [[ ! -d "${ZEBRA_DIR}" ]]; then
   echo "WARNING: zebra directory not found. Expected zebra_v1/ or ERPNext_Zebra_stabil_enterprise_version/." >&2
-  echo "TIP: bash scripts/fetch_children.sh" >&2
+  echo "TIP: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
   echo "Or set LCE_ZEBRA_HOST_DIR=/path/to/zebra" >&2
 fi
 
 if [[ ! -d "${RFID_DIR}" ]]; then
   echo "WARNING: rfid directory not found. Expected rfid/ or ERPNext_UHFReader288_integration/." >&2
-  echo "TIP: bash scripts/fetch_children.sh" >&2
+  echo "TIP: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
   echo "Or set LCE_RFID_HOST_DIR=/path/to/rfid" >&2
 fi
 
 if [[ ! -d "${ZEBRA_DIR}" && ! -d "${RFID_DIR}" ]]; then
   echo "ERROR: No child repos found (zebra/rfid)." >&2
-  echo "Run: bash scripts/fetch_children.sh" >&2
+  echo "Run: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
   exit 1
 fi
 
