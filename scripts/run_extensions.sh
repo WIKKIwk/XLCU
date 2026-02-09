@@ -798,10 +798,10 @@ fi
 
 missing_zebra=0
 missing_rfid=0
-if [[ "${need_zebra}" -eq 1 ]] && [[ -z "${ZEBRA_DIR}" || ! -d "${ZEBRA_DIR}" ]]; then
+if [[ "${need_zebra}" -eq 1 ]] && [[ -z "${ZEBRA_DIR}" || ! -d "${ZEBRA_DIR}" || ! -f "${ZEBRA_DIR}/run.sh" ]]; then
   missing_zebra=1
 fi
-if [[ "${need_rfid}" -eq 1 ]] && [[ -z "${RFID_DIR}" || ! -d "${RFID_DIR}" ]]; then
+if [[ "${need_rfid}" -eq 1 ]] && [[ -z "${RFID_DIR}" || ! -d "${RFID_DIR}" || ! -f "${RFID_DIR}/start-web.sh" ]]; then
   missing_rfid=1
 fi
 
@@ -853,8 +853,8 @@ fi
 
 # Final validation after optional auto-fetch.
 if [[ "${need_zebra}" -eq 1 ]]; then
-  if [[ -z "${ZEBRA_DIR}" || ! -d "${ZEBRA_DIR}" ]]; then
-    echo "ERROR: zebra directory not found." >&2
+  if [[ -z "${ZEBRA_DIR}" || ! -d "${ZEBRA_DIR}" || ! -f "${ZEBRA_DIR}/run.sh" ]]; then
+    echo "ERROR: zebra directory not found or invalid (missing run.sh)." >&2
     echo "Expected one of these directories (next to LCE/ or inside LCE/):" >&2
     echo "  - zebra_v1/" >&2
     echo "  - ERPNext_Zebra_stabil_enterprise_version/" >&2
@@ -870,8 +870,8 @@ else
 fi
 
 if [[ "${need_rfid}" -eq 1 ]]; then
-  if [[ -z "${RFID_DIR}" || ! -d "${RFID_DIR}" ]]; then
-    echo "ERROR: rfid directory not found." >&2
+  if [[ -z "${RFID_DIR}" || ! -d "${RFID_DIR}" || ! -f "${RFID_DIR}/start-web.sh" ]]; then
+    echo "ERROR: rfid directory not found or invalid (missing start-web.sh)." >&2
     echo "Expected one of these directories (next to LCE/ or inside LCE/):" >&2
     echo "  - rfid/" >&2
     echo "  - ERPNext_UHFReader288_integration/" >&2
