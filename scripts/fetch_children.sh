@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LCE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-if [[ -d "${LCE_DIR}/../zebra_v1" || -d "${LCE_DIR}/../rfid" ]]; then
+if [[ -d "${LCE_DIR}/../zebra_v1" || -d "${LCE_DIR}/../ERPNext_Zebra_stabil_enterprise_version" || -d "${LCE_DIR}/../rfid" || -d "${LCE_DIR}/../ERPNext_UHFReader288_integration" ]]; then
   WORK_DIR="$(cd -- "${LCE_DIR}/.." && pwd)"
 else
   WORK_DIR="${LCE_DIR}"
@@ -75,4 +75,3 @@ clone_or_update "RFID" "${RFID_REPO_URL}" "${RFID_DIR}" "${RFID_REF}"
 
 echo
 echo "OK: children repos are present."
-

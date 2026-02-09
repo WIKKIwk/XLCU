@@ -7,7 +7,7 @@ LCE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 # This repo historically kept `zebra_v1/` and `rfid/` next to `LCE/`.
 # For portability, auto-detect the "work root" (where logs/cache live) and
 # the extension directories, while still allowing overrides.
-if [[ -d "${LCE_DIR}/../zebra_v1" || -d "${LCE_DIR}/../rfid" ]]; then
+if [[ -d "${LCE_DIR}/../zebra_v1" || -d "${LCE_DIR}/../ERPNext_Zebra_stabil_enterprise_version" || -d "${LCE_DIR}/../rfid" || -d "${LCE_DIR}/../ERPNext_UHFReader288_integration" ]]; then
   WORK_DIR="$(cd -- "${LCE_DIR}/.." && pwd)"
 else
   WORK_DIR="${LCE_DIR}"
