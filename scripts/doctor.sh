@@ -47,12 +47,24 @@ if [[ ! -d "${ZEBRA_DIR}" ]]; then
   echo "WARNING: zebra directory not found. Expected zebra_v1/ or ERPNext_Zebra_stabil_enterprise_version/." >&2
   echo "TIP: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
   echo "Or set LCE_ZEBRA_HOST_DIR=/path/to/zebra" >&2
+else
+  if [[ ! -f "${ZEBRA_DIR}/run.sh" ]]; then
+    echo "ERROR: zebra directory found but missing run.sh: ${ZEBRA_DIR}/run.sh" >&2
+    echo "Expected repo: https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -d "${RFID_DIR}" ]]; then
   echo "WARNING: rfid directory not found. Expected rfid/ or ERPNext_UHFReader288_integration/." >&2
   echo "TIP: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
   echo "Or set LCE_RFID_HOST_DIR=/path/to/rfid" >&2
+else
+  if [[ ! -f "${RFID_DIR}/start-web.sh" ]]; then
+    echo "ERROR: rfid directory found but missing start-web.sh: ${RFID_DIR}/start-web.sh" >&2
+    echo "Expected repo: https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -d "${ZEBRA_DIR}" && ! -d "${RFID_DIR}" ]]; then
