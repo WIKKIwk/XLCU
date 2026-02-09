@@ -17,11 +17,30 @@ WORK_DIR="${LCE_WORK_DIR:-${WORK_DIR}}"
 ZEBRA_REPO_URL="${ZEBRA_REPO_URL:-https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git}"
 RFID_REPO_URL="${RFID_REPO_URL:-https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git}"
 
-ZEBRA_DIR="${ZEBRA_DIR:-${WORK_DIR}/zebra_v1}"
-RFID_DIR="${RFID_DIR:-${WORK_DIR}/rfid}"
+# Destination dirs:
+# - Prefer existing directories if present (avoid accidental duplicate clones).
+# - Otherwise default to the GitHub repo name (what `git clone URL` creates).
+default_zebra_dir="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
+if [[ -d "${WORK_DIR}/zebra_v1" ]]; then
+  default_zebra_dir="${WORK_DIR}/zebra_v1"
+elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
+  default_zebra_dir="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
+fi
+ZEBRA_DIR="${ZEBRA_DIR:-${default_zebra_dir}}"
+
+default_rfid_dir="${WORK_DIR}/ERPNext_UHFReader288_integration"
+if [[ -d "${WORK_DIR}/rfid" ]]; then
+  default_rfid_dir="${WORK_DIR}/rfid"
+elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration" ]]; then
+  default_rfid_dir="${WORK_DIR}/ERPNext_UHFReader288_integration"
+fi
+RFID_DIR="${RFID_DIR:-${default_rfid_dir}}"
 
 ZEBRA_REF="${ZEBRA_REF:-main}"
 RFID_REF="${RFID_REF:-main}"
+
+FETCH_ZEBRA="${LCE_FETCH_ZEBRA:-1}"
+FETCH_RFID="${LCE_FETCH_RFID:-1}"
 
 require_git() {
   if ! command -v git >/dev/null 2>&1; then
@@ -70,8 +89,12 @@ echo "ZEBRA_DIR: ${ZEBRA_DIR}"
 echo "RFID_DIR:  ${RFID_DIR}"
 echo
 
-clone_or_update "Zebra" "${ZEBRA_REPO_URL}" "${ZEBRA_DIR}" "${ZEBRA_REF}"
-clone_or_update "RFID" "${RFID_REPO_URL}" "${RFID_DIR}" "${RFID_REF}"
+if [[ "${FETCH_ZEBRA}" == "1" ]]; then
+  clone_or_update "Zebra" "${ZEBRA_REPO_URL}" "${ZEBRA_DIR}" "${ZEBRA_REF}"
+fi
+if [[ "${FETCH_RFID}" == "1" ]]; then
+  clone_or_update "RFID" "${RFID_REPO_URL}" "${RFID_DIR}" "${RFID_REF}"
+fi
 
 echo
 echo "OK: children repos are present."

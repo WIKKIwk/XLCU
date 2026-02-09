@@ -130,6 +130,22 @@ make run
 # make run-docker
 ```
 
+`make run` birinchi marta ishga tushganda, kerakli child repo'lar (Zebra/RFID) topilmasa ularni avtomatik yuklab oladi:
+
+- Zebra: `https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git`
+- RFID: `https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git`
+
+Qo'llab-quvvatlanadigan papka nomlari:
+
+- Zebra: `zebra_v1/` yoki `ERPNext_Zebra_stabil_enterprise_version/`
+- RFID: `rfid/` yoki `ERPNext_UHFReader288_integration/`
+
+Ixtiyoriy: oldindan yuklab olish (internet sekin/offline bo'lsa):
+
+```bash
+bash scripts/fetch_children.sh
+```
+
 Kerak bo'lsa lokal rejimga majburlash:
 
 ```bash

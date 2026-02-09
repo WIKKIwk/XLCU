@@ -50,6 +50,8 @@ LCE_DEV_IMAGE_REBUILD="${LCE_DEV_IMAGE_REBUILD:-0}"
 LCE_SIMULATE_DEVICES="${LCE_SIMULATE_DEVICES:-1}"
 LCE_ZEBRA_TUI_NO_BUILD="${LCE_ZEBRA_TUI_NO_BUILD:-1}"
 LCE_QUIET="${LCE_QUIET:-1}"
+LCE_AUTO_FETCH_CHILDREN="${LCE_AUTO_FETCH_CHILDREN:-1}"
+LCE_DRY_RUN="${LCE_DRY_RUN:-0}"
 export LCE_SIMULATE_DEVICES
 CORE_PG_PORT="${CORE_PG_PORT:-5433}"
 CORE_PG_DB="${CORE_PG_DB:-titan_core_cache}"
@@ -61,33 +63,54 @@ CORE_AGENT_PID=""
 CORE_AGENT_CONTAINER="lce-core-agent-dev"
 CORE_AGENT_DOCKER=0
 
-ZEBRA_DIR="${LCE_ZEBRA_HOST_DIR:-}"
-if [[ -z "${ZEBRA_DIR}" ]]; then
+detect_zebra_dir() {
+  local dir="${LCE_ZEBRA_HOST_DIR:-}"
+  if [[ -n "${dir}" ]]; then
+    printf '%s' "${dir}"
+    return 0
+  fi
+
   # Support both historical folder name (`zebra_v1/`) and the repo name used on GitHub.
   if [[ -d "${WORK_DIR}/zebra_v1" ]]; then
-    ZEBRA_DIR="${WORK_DIR}/zebra_v1"
+    dir="${WORK_DIR}/zebra_v1"
   elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
-    ZEBRA_DIR="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
+    dir="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
   elif [[ -d "${LCE_DIR}/zebra_v1" ]]; then
-    ZEBRA_DIR="${LCE_DIR}/zebra_v1"
+    dir="${LCE_DIR}/zebra_v1"
   elif [[ -d "${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
-    ZEBRA_DIR="${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version"
+    dir="${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version"
+  else
+    dir=""
   fi
-fi
 
-RFID_DIR="${LCE_RFID_HOST_DIR:-}"
-if [[ -z "${RFID_DIR}" ]]; then
+  printf '%s' "${dir}"
+}
+
+detect_rfid_dir() {
+  local dir="${LCE_RFID_HOST_DIR:-}"
+  if [[ -n "${dir}" ]]; then
+    printf '%s' "${dir}"
+    return 0
+  fi
+
   # Support both historical folder name (`rfid/`) and the repo name used on GitHub.
   if [[ -d "${WORK_DIR}/rfid" ]]; then
-    RFID_DIR="${WORK_DIR}/rfid"
+    dir="${WORK_DIR}/rfid"
   elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration" ]]; then
-    RFID_DIR="${WORK_DIR}/ERPNext_UHFReader288_integration"
+    dir="${WORK_DIR}/ERPNext_UHFReader288_integration"
   elif [[ -d "${LCE_DIR}/rfid" ]]; then
-    RFID_DIR="${LCE_DIR}/rfid"
+    dir="${LCE_DIR}/rfid"
   elif [[ -d "${LCE_DIR}/ERPNext_UHFReader288_integration" ]]; then
-    RFID_DIR="${LCE_DIR}/ERPNext_UHFReader288_integration"
+    dir="${LCE_DIR}/ERPNext_UHFReader288_integration"
+  else
+    dir=""
   fi
-fi
+
+  printf '%s' "${dir}"
+}
+
+ZEBRA_DIR="$(detect_zebra_dir)"
+RFID_DIR="$(detect_rfid_dir)"
 
 python_bin() {
   if command -v python3 >/dev/null 2>&1; then
@@ -773,6 +796,62 @@ if [[ "${LCE_CHILDREN_TARGET}" == "all" || "${LCE_CHILDREN_TARGET}" == *"rfid"* 
   need_rfid=1
 fi
 
+missing_zebra=0
+missing_rfid=0
+if [[ "${need_zebra}" -eq 1 ]] && [[ -z "${ZEBRA_DIR}" || ! -d "${ZEBRA_DIR}" ]]; then
+  missing_zebra=1
+fi
+if [[ "${need_rfid}" -eq 1 ]] && [[ -z "${RFID_DIR}" || ! -d "${RFID_DIR}" ]]; then
+  missing_rfid=1
+fi
+
+if [[ "${LCE_AUTO_FETCH_CHILDREN}" == "1" ]] && [[ "${missing_zebra}" -eq 1 || "${missing_rfid}" -eq 1 ]]; then
+  if [[ ! -f "${FETCH_CHILDREN_SCRIPT}" ]]; then
+    echo "ERROR: Missing fetch script: ${FETCH_CHILDREN_SCRIPT}" >&2
+    exit 1
+  fi
+  if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git is required to auto-download child repos (zebra/rfid)." >&2
+    echo "Install git or clone the repos manually." >&2
+    exit 1
+  fi
+
+  fetch_log="${LOG_DIR}/fetch_children.log"
+  fetch_zebra=0
+  fetch_rfid=0
+
+  # If user overrides the directories explicitly, don't auto-clone elsewhere.
+  if [[ "${missing_zebra}" -eq 1 ]] && [[ -z "${LCE_ZEBRA_HOST_DIR:-}" ]]; then
+    fetch_zebra=1
+  fi
+  if [[ "${missing_rfid}" -eq 1 ]] && [[ -z "${LCE_RFID_HOST_DIR:-}" ]]; then
+    fetch_rfid=1
+  fi
+
+  if [[ "${fetch_zebra}" -eq 1 || "${fetch_rfid}" -eq 1 ]]; then
+    if [[ "${LCE_QUIET}" != "1" ]]; then
+      echo "Child repo'lar topilmadi — avtomatik yuklab olinmoqda..."
+    fi
+
+    if [[ "${LCE_QUIET}" == "1" ]]; then
+      if ! LCE_WORK_DIR="${WORK_DIR}" LCE_FETCH_ZEBRA="${fetch_zebra}" LCE_FETCH_RFID="${fetch_rfid}" \
+        bash "${FETCH_CHILDREN_SCRIPT}" >"${fetch_log}" 2>&1; then
+        echo "ERROR: Failed to auto-download child repos." >&2
+        echo "Log: ${fetch_log}" >&2
+        tail -n 80 "${fetch_log}" >&2 || true
+        exit 1
+      fi
+    else
+      LCE_WORK_DIR="${WORK_DIR}" LCE_FETCH_ZEBRA="${fetch_zebra}" LCE_FETCH_RFID="${fetch_rfid}" \
+        bash "${FETCH_CHILDREN_SCRIPT}"
+    fi
+
+    ZEBRA_DIR="$(detect_zebra_dir)"
+    RFID_DIR="$(detect_rfid_dir)"
+  fi
+fi
+
+# Final validation after optional auto-fetch.
 if [[ "${need_zebra}" -eq 1 ]]; then
   if [[ -z "${ZEBRA_DIR}" || ! -d "${ZEBRA_DIR}" ]]; then
     echo "ERROR: zebra directory not found." >&2
@@ -782,7 +861,7 @@ if [[ "${need_zebra}" -eq 1 ]]; then
     echo "Fix options:" >&2
     echo "  1) Run: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
     echo "  2) Or clone manually:" >&2
-    echo "     git clone https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git zebra_v1" >&2
+    echo "     git clone https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git" >&2
     echo "  3) Or set LCE_ZEBRA_HOST_DIR=/path/to/zebra" >&2
     exit 1
   fi
@@ -799,12 +878,22 @@ if [[ "${need_rfid}" -eq 1 ]]; then
     echo "Fix options:" >&2
     echo "  1) Run: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
     echo "  2) Or clone manually:" >&2
-    echo "     git clone https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git rfid" >&2
+    echo "     git clone https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git" >&2
     echo "  3) Or set LCE_RFID_HOST_DIR=/path/to/rfid" >&2
     exit 1
   fi
 else
   RFID_DIR=""
+fi
+
+if [[ "${LCE_DRY_RUN}" == "1" ]]; then
+  echo "DRY RUN"
+  echo "LCE_DIR:   ${LCE_DIR}"
+  echo "WORK_DIR:  ${WORK_DIR}"
+  echo "TARGET:    ${LCE_CHILDREN_TARGET}"
+  echo "ZEBRA_DIR: ${ZEBRA_DIR:-}"
+  echo "RFID_DIR:  ${RFID_DIR:-}"
+  exit 0
 fi
 
 LCE_TOKEN_FILE="${LCE_TOKEN_FILE:-${LCE_DIR}/.tg_token}"

@@ -58,9 +58,8 @@ RFID bot esa UHF reader bilan ishlaydi — tag o'qilganda mos draft avtomatik su
 
 ```bash
 # LCE repo ichidan:
-# (Agar `zebra_v1/` yoki `rfid/` papkalar yo'q bo'lsa, avtomatik yuklab olamiz)
-bash scripts/fetch_children.sh
-
+cd LCE
+make doctor
 make run
 ```
 
@@ -74,6 +73,17 @@ Bu quyidagilarni qiladi:
 6. Telegram bot'ga config yuboradi (token, URL lar)
 7. Terminal'da bridge loglarini real-time ko'rsatadi
 
+`make run` birinchi marta ishlatilganda kerakli child repo yo'q bo'lsa, ularni avtomatik yuklab oladi:
+
+- Zebra: `https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git`
+- RFID: `https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git`
+
+Ixtiyoriy: oldindan yuklab olish (internet sekin/offline bo'lsa):
+
+```bash
+bash scripts/fetch_children.sh
+```
+
 ### Child repo'lar (Zebra / RFID)
 
 Bridge child dasturlarni tashqi repo sifatida saqlaydi. Standart joylashuv:
@@ -81,11 +91,16 @@ Bridge child dasturlarni tashqi repo sifatida saqlaydi. Standart joylashuv:
 - `zebra_v1/` yoki `ERPNext_Zebra_stabil_enterprise_version/`
 - `rfid/` yoki `ERPNext_UHFReader288_integration/`
 
-Eng osoni: `scripts/fetch_children.sh` ishlatish (yuqorida).
+Eng osoni: `make run` (kerak bo'lsa o'zi yuklab oladi) yoki qo'lda `scripts/fetch_children.sh`.
 
 Qo'lda klon qilish:
 
 ```bash
+# Tavsiya etiladi (repo nomi bilan klon qiladi):
+git clone https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git
+git clone https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git
+
+# Legacy papka nomlari bilan:
 git clone https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git zebra_v1
 git clone https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git rfid
 ```
