@@ -21,17 +21,17 @@ RFID_REPO_URL="${RFID_REPO_URL:-https://github.com/WIKKIwk/ERPNext_UHFReader288_
 # - Prefer existing directories if present (avoid accidental duplicate clones).
 # - Otherwise default to the GitHub repo name (what `git clone URL` creates).
 default_zebra_dir="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
-if [[ -d "${WORK_DIR}/zebra_v1" ]]; then
+if [[ -d "${WORK_DIR}/zebra_v1/.git" ]]; then
   default_zebra_dir="${WORK_DIR}/zebra_v1"
-elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
+elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version/.git" ]]; then
   default_zebra_dir="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
 fi
 ZEBRA_DIR="${ZEBRA_DIR:-${default_zebra_dir}}"
 
 default_rfid_dir="${WORK_DIR}/ERPNext_UHFReader288_integration"
-if [[ -d "${WORK_DIR}/rfid" ]]; then
+if [[ -d "${WORK_DIR}/rfid/.git" ]]; then
   default_rfid_dir="${WORK_DIR}/rfid"
-elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration" ]]; then
+elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration/.git" ]]; then
   default_rfid_dir="${WORK_DIR}/ERPNext_UHFReader288_integration"
 fi
 RFID_DIR="${RFID_DIR:-${default_rfid_dir}}"

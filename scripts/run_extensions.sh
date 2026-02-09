@@ -71,13 +71,13 @@ detect_zebra_dir() {
   fi
 
   # Support both historical folder name (`zebra_v1/`) and the repo name used on GitHub.
-  if [[ -d "${WORK_DIR}/zebra_v1" ]]; then
+  if [[ -d "${WORK_DIR}/zebra_v1" && -f "${WORK_DIR}/zebra_v1/run.sh" ]]; then
     dir="${WORK_DIR}/zebra_v1"
-  elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
+  elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version" && -f "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version/run.sh" ]]; then
     dir="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
-  elif [[ -d "${LCE_DIR}/zebra_v1" ]]; then
+  elif [[ -d "${LCE_DIR}/zebra_v1" && -f "${LCE_DIR}/zebra_v1/run.sh" ]]; then
     dir="${LCE_DIR}/zebra_v1"
-  elif [[ -d "${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
+  elif [[ -d "${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version" && -f "${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version/run.sh" ]]; then
     dir="${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version"
   else
     dir=""
@@ -94,13 +94,13 @@ detect_rfid_dir() {
   fi
 
   # Support both historical folder name (`rfid/`) and the repo name used on GitHub.
-  if [[ -d "${WORK_DIR}/rfid" ]]; then
+  if [[ -d "${WORK_DIR}/rfid" && -f "${WORK_DIR}/rfid/start-web.sh" ]]; then
     dir="${WORK_DIR}/rfid"
-  elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration" ]]; then
+  elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration" && -f "${WORK_DIR}/ERPNext_UHFReader288_integration/start-web.sh" ]]; then
     dir="${WORK_DIR}/ERPNext_UHFReader288_integration"
-  elif [[ -d "${LCE_DIR}/rfid" ]]; then
+  elif [[ -d "${LCE_DIR}/rfid" && -f "${LCE_DIR}/rfid/start-web.sh" ]]; then
     dir="${LCE_DIR}/rfid"
-  elif [[ -d "${LCE_DIR}/ERPNext_UHFReader288_integration" ]]; then
+  elif [[ -d "${LCE_DIR}/ERPNext_UHFReader288_integration" && -f "${LCE_DIR}/ERPNext_UHFReader288_integration/start-web.sh" ]]; then
     dir="${LCE_DIR}/ERPNext_UHFReader288_integration"
   else
     dir=""
