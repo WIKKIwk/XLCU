@@ -865,11 +865,6 @@ start_zebra_tui() {
   # avval no-build rejimida urinamiz.
   if [[ "${LCE_DOCKER}" -eq 1 ]]; then
     # Run TUI inside the already-running bridge container so host doesn't need .NET.
-    if [[ "${LCE_QUIET}" == "1" ]]; then
-      run_with_spinner "Zebra build" docker exec "${LCE_DOCKER_CONTAINER}" \
-        bash -lc "cd /zebra_v1 && ./cli.sh --help >/dev/null 2>&1"
-    fi
-
     if [[ "${LCE_ZEBRA_TUI_NO_BUILD}" == "1" ]]; then
       if docker exec -it "${LCE_DOCKER_CONTAINER}" bash -lc "cd /zebra_v1 && env CLI_NO_BUILD=1 ./cli.sh tui --url \"${LCE_ZEBRA_URL}\""; then
         return 0
@@ -877,6 +872,12 @@ start_zebra_tui() {
       if [[ "${LCE_QUIET}" != "1" ]]; then
         echo "WARNING: Zebra TUI no-build rejimida ochilmadi, build bilan qayta urinish..." >&2
       fi
+    fi
+
+    # Build step (first run) can take time; show a spinner in quiet mode.
+    if [[ "${LCE_QUIET}" == "1" ]]; then
+      run_with_spinner "Zebra build" docker exec "${LCE_DOCKER_CONTAINER}" \
+        bash -lc "cd /zebra_v1 && ./cli.sh version >/dev/null 2>&1"
     fi
 
     docker exec -it "${LCE_DOCKER_CONTAINER}" bash -lc "cd /zebra_v1 && ./cli.sh tui --url \"${LCE_ZEBRA_URL}\""
@@ -894,7 +895,7 @@ start_zebra_tui() {
 
   # Build step (first run) can take time; show a spinner in quiet mode.
   if [[ "${LCE_QUIET}" == "1" ]]; then
-    run_with_spinner "Zebra build" bash -lc "cd \"${zebra_dir}\" && ./cli.sh --help >/dev/null 2>&1"
+    run_with_spinner "Zebra build" bash -lc "cd \"${zebra_dir}\" && ./cli.sh version >/dev/null 2>&1"
   fi
   (cd "${zebra_dir}" && ./cli.sh tui --url "${LCE_ZEBRA_URL}")
 }
