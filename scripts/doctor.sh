@@ -35,12 +35,15 @@ echo "ZEBRA_DIR: ${ZEBRA_DIR:-<missing>}"
 echo "RFID_DIR:  ${RFID_DIR:-<missing>}"
 
 if [[ ! -d "${ZEBRA_DIR}" ]]; then
-  echo "ERROR: zebra directory not found. Set LCE_ZEBRA_HOST_DIR to override." >&2
-  exit 1
+  echo "WARNING: zebra directory not found. Set LCE_ZEBRA_HOST_DIR to override." >&2
 fi
 
 if [[ ! -d "${RFID_DIR}" ]]; then
-  echo "ERROR: rfid directory not found. Set LCE_RFID_HOST_DIR to override." >&2
+  echo "WARNING: rfid directory not found. Set LCE_RFID_HOST_DIR to override." >&2
+fi
+
+if [[ ! -d "${ZEBRA_DIR}" && ! -d "${RFID_DIR}" ]]; then
+  echo "ERROR: Neither zebra_v1/ nor rfid/ directory found. Clone the full extension repo or set LCE_ZEBRA_HOST_DIR/LCE_RFID_HOST_DIR." >&2
   exit 1
 fi
 

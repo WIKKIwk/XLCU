@@ -78,18 +78,6 @@ if [[ -z "${RFID_DIR}" ]]; then
   fi
 fi
 
-if [[ ! -d "${ZEBRA_DIR}" ]]; then
-  echo "ERROR: zebra directory not found. Expected zebra_v1/ next to LCE/ or inside LCE/." >&2
-  echo "Set LCE_ZEBRA_HOST_DIR to override." >&2
-  exit 1
-fi
-
-if [[ ! -d "${RFID_DIR}" ]]; then
-  echo "ERROR: rfid directory not found. Expected rfid/ next to LCE/ or inside LCE/." >&2
-  echo "Set LCE_RFID_HOST_DIR to override." >&2
-  exit 1
-fi
-
 python_bin() {
   if command -v python3 >/dev/null 2>&1; then
     echo python3
@@ -367,36 +355,20 @@ post_config() {
   local telegram_token="$1"
   local zebra_url="$2"
   local rfid_url="$3"
-  local py
-  py="$(python_bin || true)"
-  if [[ -z "${py}" ]]; then
-    echo "ERROR: python3 is required to build JSON payload." >&2
-    exit 1
+  local target="${LCE_CHILDREN_TARGET:-zebra}"
+
+  # Build JSON without Python/jq dependency.
+  # Telegram token charset is restricted; URLs here are simple http(s) strings.
+  local telegram_token_val=""
+  local rfid_token_val=""
+  if [[ "${target}" == *"rfid"* ]]; then
+    rfid_token_val="${telegram_token}"
+  else
+    telegram_token_val="${telegram_token}"
   fi
 
   local payload
-  payload="$(${py} - <<PY
-import json, os
-target = os.environ.get('LCE_CHILDREN_TARGET', 'zebra')
-token = os.environ.get('TG_TOKEN', '')
-d = {}
-if 'rfid' in target:
-    d['rfid_telegram_token'] = token
-    d['telegram_token'] = ''
-else:
-    d['telegram_token'] = token
-    d['rfid_telegram_token'] = ''
-zebra = os.environ.get('ZEBRA_URL', '')
-rfid = os.environ.get('RFID_URL', '')
-if zebra: d['zebra_url'] = zebra
-if rfid: d['rfid_url'] = rfid
-print(json.dumps(d))
-PY
-)"
-
-  if [[ -z "${payload}" || "${payload}" == "{}" ]]; then
-    return 0
-  fi
+  payload="{\"telegram_token\":\"${telegram_token_val}\",\"rfid_telegram_token\":\"${rfid_token_val}\",\"zebra_url\":\"${zebra_url}\",\"rfid_url\":\"${rfid_url}\"}"
 
   if command -v curl >/dev/null 2>&1; then
     curl -fsS -X POST "http://127.0.0.1:${LCE_PORT}/api/config" \
@@ -558,13 +530,17 @@ start_lce() {
     export LCE_CHILDREN_MODE="${LCE_CHILDREN_MODE:-on}"
     ensure_postgres
     (
-      cd "${LCE_DIR}/src/bridge"
-      # Explicit dirs make the bridge independent of where this script lives.
-      export LCE_ROOT_DIR="${WORK_DIR}"
-      export LCE_ZEBRA_DIR="${ZEBRA_DIR}"
-      export LCE_RFID_DIR="${RFID_DIR}"
-      export CLOAK_KEY="${CLOAK_KEY}"
-      export MIX_ENV=dev
+	      cd "${LCE_DIR}/src/bridge"
+	      # Explicit dirs make the bridge independent of where this script lives.
+	      export LCE_ROOT_DIR="${WORK_DIR}"
+	      if [[ -n "${ZEBRA_DIR}" ]]; then
+	        export LCE_ZEBRA_DIR="${ZEBRA_DIR}"
+	      fi
+	      if [[ -n "${RFID_DIR}" ]]; then
+	        export LCE_RFID_DIR="${RFID_DIR}"
+	      fi
+	      export CLOAK_KEY="${CLOAK_KEY}"
+	      export MIX_ENV=dev
       mix local.hex --force
       mix local.rebar --force
       mix deps.get
@@ -691,31 +667,37 @@ start_lce_docker() {
   mkdir -p "${LCE_MIX_CACHE_DIR}" "${LCE_BUILD_CACHE_DIR}" "${LCE_DEPS_CACHE_DIR}"
   free_port "${ZEBRA_WEB_PORT}"
   free_port "${RFID_WEB_PORT}"
-  docker run -d --name "${LCE_DOCKER_CONTAINER}" --network "${LCE_DOCKER_NETWORK}" \
-      --dns "${LCE_DOCKER_DNS_PRIMARY}" \
-      --dns "${LCE_DOCKER_DNS_SECONDARY}" \
-      -p "${LCE_PORT}:4000" \
-      -p "${ZEBRA_WEB_PORT}:${ZEBRA_WEB_PORT}" \
-      -p "${RFID_WEB_PORT}:${RFID_WEB_PORT}" \
-      -e DATABASE_URL="ecto://titan:titan_secret@${LCE_POSTGRES_CONTAINER}:5432/titan_bridge_dev" \
-      -e MIX_ENV=dev \
-      -e CLOAK_KEY="${CLOAK_KEY}" \
-      -e LCE_HOST_ALIAS="host.docker.internal" \
-      -e LCE_ZEBRA_DIR="/zebra_v1" \
-      -e LCE_RFID_DIR="/rfid" \
-      -e LCE_SIMULATE_DEVICES="${LCE_SIMULATE_DEVICES}" \
-      -e "LCE_CHILDREN_TARGET=${LCE_CHILDREN_TARGET:-all}" \
-      -e "LCE_CHILDREN_MODE=${LCE_CHILDREN_MODE:-on}" \
-      -v "${LCE_MIX_CACHE_DIR}:/root/.mix" \
-      -v "${LCE_DIR}/src/bridge:/app" \
-      -v "${LCE_BUILD_CACHE_DIR}:/app/_build" \
-      -v "${LCE_DEPS_CACHE_DIR}:/app/deps" \
-      -v "${ZEBRA_DIR}:/zebra_v1" \
-      -v "${RFID_DIR}:/rfid" \
-      -w /app \
-      --add-host=host.docker.internal:host-gateway \
-      --restart no \
-      "${LCE_DEV_IMAGE}" \
+  local -a docker_args=(
+    run -d --name "${LCE_DOCKER_CONTAINER}" --network "${LCE_DOCKER_NETWORK}"
+    --dns "${LCE_DOCKER_DNS_PRIMARY}"
+    --dns "${LCE_DOCKER_DNS_SECONDARY}"
+    -p "${LCE_PORT}:4000"
+    -p "${ZEBRA_WEB_PORT}:${ZEBRA_WEB_PORT}"
+    -p "${RFID_WEB_PORT}:${RFID_WEB_PORT}"
+    -e DATABASE_URL="ecto://titan:titan_secret@${LCE_POSTGRES_CONTAINER}:5432/titan_bridge_dev"
+    -e MIX_ENV=dev
+    -e CLOAK_KEY="${CLOAK_KEY}"
+    -e LCE_HOST_ALIAS="host.docker.internal"
+    -e LCE_SIMULATE_DEVICES="${LCE_SIMULATE_DEVICES}"
+    -e "LCE_CHILDREN_TARGET=${LCE_CHILDREN_TARGET:-all}"
+    -e "LCE_CHILDREN_MODE=${LCE_CHILDREN_MODE:-on}"
+    -v "${LCE_MIX_CACHE_DIR}:/root/.mix"
+    -v "${LCE_DIR}/src/bridge:/app"
+    -v "${LCE_BUILD_CACHE_DIR}:/app/_build"
+    -v "${LCE_DEPS_CACHE_DIR}:/app/deps"
+    -w /app
+    --add-host=host.docker.internal:host-gateway
+    --restart no
+  )
+
+  if [[ -n "${ZEBRA_DIR}" ]]; then
+    docker_args+=( -e LCE_ZEBRA_DIR="/zebra_v1" -v "${ZEBRA_DIR}:/zebra_v1" )
+  fi
+  if [[ -n "${RFID_DIR}" ]]; then
+    docker_args+=( -e LCE_RFID_DIR="/rfid" -v "${RFID_DIR}:/rfid" )
+  fi
+
+  docker "${docker_args[@]}" "${LCE_DEV_IMAGE}" \
       bash -lc "if ! ls /root/.mix/archives/hex-* >/dev/null 2>&1; then mix local.hex --force; fi \
         && if ! ls /root/.mix/elixir/*/rebar3 >/dev/null 2>&1; then mix local.rebar --force; fi \
         && mix deps.get \
@@ -768,6 +750,36 @@ if [[ -z "${LCE_CHILDREN_TARGET:-}" ]]; then
   else
     LCE_CHILDREN_TARGET="zebra"
   fi
+fi
+
+# Validate required extension directories based on selected target.
+need_zebra=0
+need_rfid=0
+if [[ "${LCE_CHILDREN_TARGET}" == "all" || "${LCE_CHILDREN_TARGET}" == *"zebra"* ]]; then
+  need_zebra=1
+fi
+if [[ "${LCE_CHILDREN_TARGET}" == "all" || "${LCE_CHILDREN_TARGET}" == *"rfid"* ]]; then
+  need_rfid=1
+fi
+
+if [[ "${need_zebra}" -eq 1 ]]; then
+  if [[ -z "${ZEBRA_DIR}" || ! -d "${ZEBRA_DIR}" ]]; then
+    echo "ERROR: zebra directory not found. Expected zebra_v1/ next to LCE/ or inside LCE/." >&2
+    echo "Set LCE_ZEBRA_HOST_DIR to override." >&2
+    exit 1
+  fi
+else
+  ZEBRA_DIR=""
+fi
+
+if [[ "${need_rfid}" -eq 1 ]]; then
+  if [[ -z "${RFID_DIR}" || ! -d "${RFID_DIR}" ]]; then
+    echo "ERROR: rfid directory not found. Expected rfid/ next to LCE/ or inside LCE/." >&2
+    echo "Set LCE_RFID_HOST_DIR to override." >&2
+    exit 1
+  fi
+else
+  RFID_DIR=""
 fi
 
 LCE_TOKEN_FILE="${LCE_TOKEN_FILE:-${LCE_DIR}/.tg_token}"
@@ -851,6 +863,26 @@ start_zebra_tui() {
 
   # Docker ichida Zebra Web ishga tushayotganda hostdagi build bilan to'qnashmaslik uchun
   # avval no-build rejimida urinamiz.
+  if [[ "${LCE_DOCKER}" -eq 1 ]]; then
+    # Run TUI inside the already-running bridge container so host doesn't need .NET.
+    if [[ "${LCE_QUIET}" == "1" ]]; then
+      run_with_spinner "Zebra build" docker exec "${LCE_DOCKER_CONTAINER}" \
+        bash -lc "cd /zebra_v1 && ./cli.sh --help >/dev/null 2>&1"
+    fi
+
+    if [[ "${LCE_ZEBRA_TUI_NO_BUILD}" == "1" ]]; then
+      if docker exec -it "${LCE_DOCKER_CONTAINER}" bash -lc "cd /zebra_v1 && env CLI_NO_BUILD=1 ./cli.sh tui --url \"${LCE_ZEBRA_URL}\""; then
+        return 0
+      fi
+      if [[ "${LCE_QUIET}" != "1" ]]; then
+        echo "WARNING: Zebra TUI no-build rejimida ochilmadi, build bilan qayta urinish..." >&2
+      fi
+    fi
+
+    docker exec -it "${LCE_DOCKER_CONTAINER}" bash -lc "cd /zebra_v1 && ./cli.sh tui --url \"${LCE_ZEBRA_URL}\""
+    return $?
+  fi
+
   if [[ "${LCE_ZEBRA_TUI_NO_BUILD}" == "1" ]]; then
     if (cd "${zebra_dir}" && env CLI_NO_BUILD=1 ./cli.sh tui --url "${LCE_ZEBRA_URL}"); then
       return 0
@@ -863,10 +895,8 @@ start_zebra_tui() {
   # Build step (first run) can take time; show a spinner in quiet mode.
   if [[ "${LCE_QUIET}" == "1" ]]; then
     run_with_spinner "Zebra build" bash -lc "cd \"${zebra_dir}\" && ./cli.sh --help >/dev/null 2>&1"
-    (cd "${zebra_dir}" && env CLI_NO_BUILD=1 ./cli.sh tui --url "${LCE_ZEBRA_URL}")
-  else
-    (cd "${zebra_dir}" && ./cli.sh tui --url "${LCE_ZEBRA_URL}")
   fi
+  (cd "${zebra_dir}" && ./cli.sh tui --url "${LCE_ZEBRA_URL}")
 }
 
 start_core_agent() {
@@ -956,7 +986,7 @@ start_core_agent
 # Zebra tanlangan va TUI mavjud bo'lsa — TUI ochiladi (blocking)
 # Aks holda — banner + wait
 SHOW_BANNER=1
-if [[ "${LCE_SHOW_ZEBRA_TUI:-0}" == "1" ]] && command -v dotnet >/dev/null 2>&1; then
+if [[ "${LCE_SHOW_ZEBRA_TUI:-0}" == "1" ]] && [[ -t 0 ]] && [[ -t 1 ]]; then
   # LCE va Zebra xizmatlari ishga tushayotganini ko'rsatish (quiet mode).
   if [[ "${LCE_QUIET}" == "1" ]]; then
     wait_for_url_with_spinner "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}" "LCE ishga tushmoqda" || true
