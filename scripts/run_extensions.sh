@@ -62,19 +62,29 @@ CORE_AGENT_DOCKER=0
 
 ZEBRA_DIR="${LCE_ZEBRA_HOST_DIR:-}"
 if [[ -z "${ZEBRA_DIR}" ]]; then
+  # Support both historical folder name (`zebra_v1/`) and the repo name used on GitHub.
   if [[ -d "${WORK_DIR}/zebra_v1" ]]; then
     ZEBRA_DIR="${WORK_DIR}/zebra_v1"
+  elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
+    ZEBRA_DIR="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
   elif [[ -d "${LCE_DIR}/zebra_v1" ]]; then
     ZEBRA_DIR="${LCE_DIR}/zebra_v1"
+  elif [[ -d "${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
+    ZEBRA_DIR="${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version"
   fi
 fi
 
 RFID_DIR="${LCE_RFID_HOST_DIR:-}"
 if [[ -z "${RFID_DIR}" ]]; then
+  # Support both historical folder name (`rfid/`) and the repo name used on GitHub.
   if [[ -d "${WORK_DIR}/rfid" ]]; then
     RFID_DIR="${WORK_DIR}/rfid"
+  elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration" ]]; then
+    RFID_DIR="${WORK_DIR}/ERPNext_UHFReader288_integration"
   elif [[ -d "${LCE_DIR}/rfid" ]]; then
     RFID_DIR="${LCE_DIR}/rfid"
+  elif [[ -d "${LCE_DIR}/ERPNext_UHFReader288_integration" ]]; then
+    RFID_DIR="${LCE_DIR}/ERPNext_UHFReader288_integration"
   fi
 fi
 
@@ -764,8 +774,15 @@ fi
 
 if [[ "${need_zebra}" -eq 1 ]]; then
   if [[ -z "${ZEBRA_DIR}" || ! -d "${ZEBRA_DIR}" ]]; then
-    echo "ERROR: zebra directory not found. Expected zebra_v1/ next to LCE/ or inside LCE/." >&2
-    echo "Set LCE_ZEBRA_HOST_DIR to override." >&2
+    echo "ERROR: zebra directory not found." >&2
+    echo "Expected one of these directories (next to LCE/ or inside LCE/):" >&2
+    echo "  - zebra_v1/" >&2
+    echo "  - ERPNext_Zebra_stabil_enterprise_version/" >&2
+    echo "Fix options:" >&2
+    echo "  1) Run: bash scripts/fetch_children.sh" >&2
+    echo "  2) Or clone manually:" >&2
+    echo "     git clone https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git zebra_v1" >&2
+    echo "  3) Or set LCE_ZEBRA_HOST_DIR=/path/to/zebra" >&2
     exit 1
   fi
 else
@@ -774,8 +791,15 @@ fi
 
 if [[ "${need_rfid}" -eq 1 ]]; then
   if [[ -z "${RFID_DIR}" || ! -d "${RFID_DIR}" ]]; then
-    echo "ERROR: rfid directory not found. Expected rfid/ next to LCE/ or inside LCE/." >&2
-    echo "Set LCE_RFID_HOST_DIR to override." >&2
+    echo "ERROR: rfid directory not found." >&2
+    echo "Expected one of these directories (next to LCE/ or inside LCE/):" >&2
+    echo "  - rfid/" >&2
+    echo "  - ERPNext_UHFReader288_integration/" >&2
+    echo "Fix options:" >&2
+    echo "  1) Run: bash scripts/fetch_children.sh" >&2
+    echo "  2) Or clone manually:" >&2
+    echo "     git clone https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git rfid" >&2
+    echo "  3) Or set LCE_RFID_HOST_DIR=/path/to/rfid" >&2
     exit 1
   fi
 else

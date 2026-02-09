@@ -51,13 +51,16 @@ RFID bot esa UHF reader bilan ishlaydi — tag o'qilganda mos draft avtomatik su
 
 ### Talablar
 
-- Docker (Elixir + PostgreSQL konteynerlar)
-- Yoki lokal: Elixir 1.16+, PostgreSQL, Node.js, Java 17+, .NET 8+
+- Tavsiya etiladi: Docker (Bridge + PostgreSQL + child runtime'lar bir xil versiyada ishlaydi)
+- Lokal (Docker'siz): Elixir 1.16+, PostgreSQL. Child dasturlar uchun qo'shimcha runtime'lar kerak bo'lishi mumkin.
 
 ### Tezkor ishga tushirish
 
 ```bash
-# Loyiha ildizidan:
+# LCE repo ichidan:
+# (Agar `zebra_v1/` yoki `rfid/` papkalar yo'q bo'lsa, avtomatik yuklab olamiz)
+bash scripts/fetch_children.sh
+
 make run
 ```
 
@@ -70,6 +73,27 @@ Bu quyidagilarni qiladi:
 5. Health endpoint tayyor bo'lguncha kutadi
 6. Telegram bot'ga config yuboradi (token, URL lar)
 7. Terminal'da bridge loglarini real-time ko'rsatadi
+
+### Child repo'lar (Zebra / RFID)
+
+Bridge child dasturlarni tashqi repo sifatida saqlaydi. Standart joylashuv:
+
+- `zebra_v1/` yoki `ERPNext_Zebra_stabil_enterprise_version/`
+- `rfid/` yoki `ERPNext_UHFReader288_integration/`
+
+Eng osoni: `scripts/fetch_children.sh` ishlatish (yuqorida).
+
+Qo'lda klon qilish:
+
+```bash
+git clone https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git zebra_v1
+git clone https://github.com/WIKKIwk/ERPNext_UHFReader288_integration.git rfid
+```
+
+Nostandart joylashuv bo'lsa:
+
+- `LCE_ZEBRA_HOST_DIR=/path/to/zebra ...`
+- `LCE_RFID_HOST_DIR=/path/to/rfid ...`
 
 ### Portlar
 
