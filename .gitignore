@@ -17,6 +17,9 @@ src/core_agent/obj/
 # Secrets & tokens
 .env
 .tg_token
+.tg_token.invalid*
+.cache/
+logs/
 *.pem
 *.key
 

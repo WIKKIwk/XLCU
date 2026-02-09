@@ -7,10 +7,19 @@ import Config
 # DATABASE_URL format: ecto://user:pass@host:port/dbname
 database_url = System.get_env("DATABASE_URL") ||
   "ecto://titan:titan_secret@localhost/titan_bridge_dev"
+sql_log =
+  case String.downcase(System.get_env("LCE_SQL_LOG", "false")) do
+    "1" -> :debug
+    "true" -> :debug
+    "yes" -> :debug
+    "on" -> :debug
+    _ -> false
+  end
 
 config :titan_bridge, TitanBridge.Repo,
   url: database_url,
-  pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10")
+  pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+  log: sql_log
 
 # --- Child process configuration ---
 # Bridge spawns zebra_v1 and rfid as OS child processes.

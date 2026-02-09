@@ -118,6 +118,24 @@ Barcha fayllar `PROJECT_TITAN_*.cs` dan ajratilgan:
 
 ## 🚀 Tez Boshlash
 
+### Eng oson (kafolatli) usul: Docker bilan `make run`
+
+Bu rejimda host kompyuterda Elixir/.NET/Java/Node o'rnatish shart emas (faqat Docker kerak).
+
+```bash
+cd LCE
+make doctor
+make run
+# yoki majburan docker:
+# make run-docker
+```
+
+Kerak bo'lsa lokal rejimga majburlash:
+
+```bash
+LCE_FORCE_LOCAL=1 make run
+```
+
 ### Development rejimida ishga tushirish:
 
 ```bash

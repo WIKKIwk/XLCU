@@ -1,0 +1,45 @@
+# LCE Bridge Dev Runtime Image
+#
+# Goal: make `make run` reproducible on any machine that has Docker,
+# without requiring Elixir/Erlang/.NET/Node/Java installed on the host.
+#
+# This image is intentionally "fat": it includes the tooling needed to run
+# the Elixir bridge in dev mode and to spawn the Zebra (.NET) and RFID (Node+Java)
+# child processes from inside the same container.
+#
+# Versions are pinned via base image tags.
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS dotnet
+
+FROM hexpm/elixir:1.16.2-erlang-26.2.5-debian-bookworm-20240513-slim
+
+SHELL ["/bin/bash", "-lc"]
+
+RUN apt-get update -y \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    build-essential \
+    nodejs \
+    openjdk-17-jre-headless \
+    # dotnet runtime deps
+    libicu72 \
+    libssl3 \
+    libstdc++6 \
+    zlib1g \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy the .NET SDK from the official image so Zebra can run without downloading
+# dotnet at runtime (works with zebra_v1/run.sh which checks `dotnet --list-runtimes`).
+COPY --from=dotnet /usr/share/dotnet /usr/share/dotnet
+RUN ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet
+
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH="/usr/share/dotnet:${PATH}"
+
+WORKDIR /app
+
+CMD ["bash"]
+
