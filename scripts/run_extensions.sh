@@ -268,38 +268,180 @@ resolve_path() {
 }
 
 auto_detect_scale_port() {
-  # Many scales are USB-serial devices (/dev/ttyUSB*, /dev/ttyACM*). When there are
-  # multiple serial devices, ZebraBridge will try to probe; but if only one is
-  # present we can pin it to avoid picking ttyS0, etc.
+  # Industrial-grade scale port selection:
+  # - If user explicitly sets ZEBRA_SCALE_PORT: use it.
+  # - Else try cached selection (stable by-id) and resolve to /dev/tty*.
+  # - Else if exactly one USB-serial device is present: auto-pick.
+  # - Else (many devices): prompt once (interactive) and cache; or require a hint (non-interactive).
   #
-  # Respect user override:
+  # Why: ZebraBridge auto-probing is sequential; with many serial devices it can feel like "freeze".
+  #
+  # Manual override:
   #   ZEBRA_SCALE_PORT=/dev/ttyUSB0 make run
+  #
+  # Deterministic selection among many devices (recommended for 10+ devices):
+  #   ZEBRA_SCALE_PORT_HINT=FTDI make run
+  #   ZEBRA_SCALE_PORT_HINT=usb-1a86_USB2.0-Serial make run
+  # (matches /dev/serial/by-id/* names)
+
+  # Only relevant when zebra is running.
+  case "${LCE_CHILDREN_TARGET:-zebra}" in
+    zebra|all|zebra,*) ;;
+    *zebra*) ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  # Respect user override.
   if [[ -n "${ZEBRA_SCALE_PORT:-}" ]]; then
     return 0
   fi
 
-  local -a candidates=()
+  # Respect disabling scale via env (common values).
+  local scale_enabled_raw="${ZEBRA_SCALE_ENABLED:-1}"
+  case "${scale_enabled_raw,,}" in
+    0|false|no|n|off)
+      return 0
+      ;;
+  esac
+
+  local cache_file="${LCE_SCALE_CACHE_FILE:-${WORK_DIR}/.cache/zebra-scale.by-id}"
+  local cache_value=""
+
+  # Prefer stable by-id symlinks; cache stores the by-id path and we resolve it each run.
+  if [[ -f "${cache_file}" ]]; then
+    cache_value="$(cat "${cache_file}" 2>/dev/null || true)"
+    cache_value="$(trim_token "${cache_value}")"
+    if [[ -n "${cache_value}" ]]; then
+      if [[ "${cache_value}" == /dev/serial/by-id/* && -e "${cache_value}" ]]; then
+        local cached_target=""
+        cached_target="$(resolve_path "${cache_value}")"
+        if [[ "${cached_target}" == /dev/ttyUSB* || "${cached_target}" == /dev/ttyACM* ]]; then
+          export ZEBRA_SCALE_PORT="${cached_target}"
+          return 0
+        fi
+      elif [[ "${cache_value}" == /dev/ttyUSB* || "${cache_value}" == /dev/ttyACM* ]]; then
+        if [[ -e "${cache_value}" ]]; then
+          export ZEBRA_SCALE_PORT="${cache_value}"
+          return 0
+        fi
+      fi
+    fi
+  fi
+
+  local -a byid_paths=()
+  local -a byid_targets=()
   local p=""
 
-  # Prefer stable by-id symlinks (best UX; survives replug).
   while IFS= read -r p; do
     [[ -e "${p}" ]] || continue
     local target=""
     target="$(resolve_path "${p}")"
     if [[ "${target}" == /dev/ttyUSB* || "${target}" == /dev/ttyACM* ]]; then
-      candidates+=( "${target}" )
+      byid_paths+=( "${p}" )
+      byid_targets+=( "${target}" )
     fi
   done < <(compgen -G "/dev/serial/by-id/*" 2>/dev/null || true)
 
-  # Fallback to raw device nodes.
-  if [[ "${#candidates[@]}" -eq 0 ]]; then
+  # Apply hint if provided (matches by-id names).
+  local hint="${ZEBRA_SCALE_PORT_HINT:-}"
+  hint="$(trim_token "${hint}")"
+  if [[ -n "${hint}" && "${#byid_paths[@]}" -gt 0 ]]; then
+    local -a hint_paths=()
+    local -a hint_targets=()
+    for i in "${!byid_paths[@]}"; do
+      if [[ "${byid_paths[i],,}" == *"${hint,,}"* ]]; then
+        hint_paths+=( "${byid_paths[i]}" )
+        hint_targets+=( "${byid_targets[i]}" )
+      fi
+    done
+    if [[ "${#hint_targets[@]}" -eq 1 ]]; then
+      export ZEBRA_SCALE_PORT="${hint_targets[0]}"
+      mkdir -p "$(dirname -- "${cache_file}")" 2>/dev/null || true
+      ( umask 077 && printf '%s\n' "${hint_paths[0]}" > "${cache_file}" ) 2>/dev/null || true
+      return 0
+    fi
+    if [[ "${#hint_targets[@]}" -gt 1 ]]; then
+      byid_paths=( "${hint_paths[@]}" )
+      byid_targets=( "${hint_targets[@]}" )
+    else
+      echo "WARNING: ZEBRA_SCALE_PORT_HINT mos port topilmadi: ${hint}" >&2
+    fi
+  fi
+
+  # If we have no by-id candidates, fallback to raw device nodes.
+  local -a candidates=()
+  if [[ "${#byid_targets[@]}" -gt 0 ]]; then
+    candidates=( "${byid_targets[@]}" )
+  else
     while IFS= read -r p; do candidates+=( "${p}" ); done < <(compgen -G "/dev/ttyUSB*" 2>/dev/null || true)
     while IFS= read -r p; do candidates+=( "${p}" ); done < <(compgen -G "/dev/ttyACM*" 2>/dev/null || true)
   fi
 
-  # If there is exactly one obvious serial device, use it.
+  # If there is exactly one obvious serial device, use it (and cache if possible).
   if [[ "${#candidates[@]}" -eq 1 ]]; then
     export ZEBRA_SCALE_PORT="${candidates[0]}"
+    if [[ "${#byid_paths[@]}" -eq 1 ]]; then
+      mkdir -p "$(dirname -- "${cache_file}")" 2>/dev/null || true
+      ( umask 077 && printf '%s\n' "${byid_paths[0]}" > "${cache_file}" ) 2>/dev/null || true
+    fi
+    return 0
+  fi
+
+  # Multiple candidates: pick interactively once and cache (best UX), otherwise require explicit env.
+  local pick="${ZEBRA_SCALE_PORT_PICK:-1}"
+  if [[ "${#candidates[@]}" -gt 1 && "${pick}" == "1" && -t 0 ]]; then
+    echo "" >&2
+    echo "Bir nechta USB-serial qurilma topildi. Tarozi (scale) qaysi portda ekanini tanlang:" >&2
+    echo "" >&2
+
+    local -a menu_labels=()
+    if [[ "${#byid_targets[@]}" -gt 0 ]]; then
+      for i in "${!byid_targets[@]}"; do
+        menu_labels+=( "${byid_targets[i]}    (${byid_paths[i]})" )
+      done
+    else
+      for i in "${!candidates[@]}"; do
+        menu_labels+=( "${candidates[i]}" )
+      done
+    fi
+
+    for i in "${!menu_labels[@]}"; do
+      printf "  %d) %s\n" "$((i + 1))" "${menu_labels[i]}" >&2
+    done
+
+    local choice=""
+    while true; do
+      read -r -p "Choice [1-${#menu_labels[@]}] (default: 1): " choice
+      choice="$(trim_token "${choice}")"
+      if [[ -z "${choice}" ]]; then
+        choice="1"
+      fi
+      if [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#menu_labels[@]} )); then
+        break
+      fi
+      echo "ERROR: noto'g'ri tanlov." >&2
+    done
+
+    local idx=$((choice - 1))
+    if [[ "${#byid_targets[@]}" -gt 0 ]]; then
+      export ZEBRA_SCALE_PORT="${byid_targets[idx]}"
+      mkdir -p "$(dirname -- "${cache_file}")" 2>/dev/null || true
+      ( umask 077 && printf '%s\n' "${byid_paths[idx]}" > "${cache_file}" ) 2>/dev/null || true
+    else
+      export ZEBRA_SCALE_PORT="${candidates[idx]}"
+      mkdir -p "$(dirname -- "${cache_file}")" 2>/dev/null || true
+      ( umask 077 && printf '%s\n' "${candidates[idx]}" > "${cache_file}" ) 2>/dev/null || true
+    fi
+
+    return 0
+  fi
+
+  if [[ "${#candidates[@]}" -gt 1 && ! -t 0 ]]; then
+    echo "WARNING: Bir nechta serial port bor, lekin non-interactive rejim. Scale portni aniq belgilang:" >&2
+    echo "  ZEBRA_SCALE_PORT=/dev/ttyUSB0 make run" >&2
+    echo "  yoki: ZEBRA_SCALE_PORT_HINT=<by-id substring> make run" >&2
   fi
 }
 

@@ -172,10 +172,29 @@ curl -fsS http://127.0.0.1:18000/api/v1/scale
 
 Eslatma: hozircha ZebraBridge tarozi o'qish uchun **serial port** (`/dev/ttyUSB*`, `/dev/ttyACM*`) dan foydalanadi. Agar portlar bo'sh chiqsa, tarozi HID bo'lishi yoki Docker ichida device ko'rinmayotgan bo'lishi mumkin.
 
-Agar bir nechta serial device bo'lsa, skript faqat **bitta** aniq port topilganda avtomatik `ZEBRA_SCALE_PORT` ni set qiladi. Aks holda portni qo'lda ko'rsatish mumkin:
+`make run` scale portni imkon qadar **deterministik** tanlaydi:
+
+- agar faqat bitta USB-serial port bo'lsa: avtomatik tanlaydi
+- agar bir nechta port bo'lsa: interactive rejimda (TTY) sizdan bir marta tanlov so'raydi va `.cache/zebra-scale.by-id` ga saqlab qo'yadi (keyingi startlarda avtomatik ishlaydi)
+- non-interactive (CI/server) rejimda: portni env orqali aniq berish kerak
+
+Qo'lda ko'rsatish:
 
 ```bash
 ZEBRA_SCALE_PORT=/dev/ttyUSB0 make run
+```
+
+Ko'p device bo'lganda (10+), by-id nomi bo'yicha hint berish (tavsiya):
+
+```bash
+# /dev/serial/by-id/* ichidagi substring (masalan FTDI, 1a86, CH340, va hokazo)
+ZEBRA_SCALE_PORT_HINT=FTDI make run
+```
+
+Cache'ni tozalash (port o'zgargan bo'lsa):
+
+```bash
+rm -f .cache/zebra-scale.by-id
 ```
 
 `make run` birinchi marta ishga tushganda, kerakli child repo'lar (Zebra/RFID) topilmasa ularni avtomatik yuklab oladi:
