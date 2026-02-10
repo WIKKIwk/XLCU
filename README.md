@@ -123,13 +123,16 @@ Barcha fayllar `PROJECT_TITAN_*.cs` dan ajratilgan:
 Bu rejimda host kompyuterda Elixir/.NET/Java/Node o'rnatish shart emas (faqat Docker kerak).
 
 ```bash
-cd LCE
+cd XLCU
 make bootstrap   # Ubuntu/Arch: git + docker va kerakli utilitalar
-make doctor
 make run
+# ixtiyoriy: tekshiruv
+make doctor
 # yoki majburan docker:
 # make run-docker
 ```
+
+Eslatma: `make bootstrap` sizni `docker` group'ga qo'shishi mumkin. Shundan keyin `logout/login` qiling yoki `newgrp docker`.
 
 USB/Serial (printer/RFID/scale) bilan ishlash kerak bo'lsa, `make run` Docker'ni avtomatik `--privileged` bilan ishga tushiradi.
 Kerak bo'lmasa o'chirib qo'ying:
@@ -138,6 +141,13 @@ Kerak bo'lmasa o'chirib qo'ying:
 make run LCE_DOCKER_PRIVILEGED=0
 # ixtiyoriy: faqat aniq device'larni berish:
 make run-docker LCE_DOCKER_PRIVILEGED=0 LCE_DOCKER_DEVICES=/dev/ttyUSB0,/dev/usb/lp0
+```
+
+USB ko'rinyaptimi tekshirish (container ichida):
+
+```bash
+docker exec lce-bridge-dev lsusb
+docker exec lce-bridge-dev ls -la /dev/ttyUSB* /dev/ttyACM* /dev/usb/lp* 2>/dev/null || true
 ```
 
 `make run` birinchi marta ishga tushganda, kerakli child repo'lar (Zebra/RFID) topilmasa ularni avtomatik yuklab oladi:
@@ -166,18 +176,18 @@ LCE_FORCE_LOCAL=1 make run
 
 ```bash
 # 1. C# Core
-cd LCE/src/core
+cd src/core
 dotnet build
 dotnet run --project src/Titan.Host
 
 # 2. Elixir Bridge
-cd LCE/src/bridge
+cd ../bridge
 mix deps.get
 mix ecto.setup
 mix run --no-halt
 
-# 3. Docker Compose bilan
-cd LCE
+# 3. Docker Compose bilan (repo root)
+cd ../..
 cp .env.example .env  # .env ni to'ldiring
 docker compose up --build
 ```
@@ -242,13 +252,8 @@ LCE_API_TOKEN=...        # API Bearer token
 Barcha fayllarni yuqoridagi strukturaga joylashtirgandan so'ng:
 
 ```bash
-cd LCE
-docker-compose up -d
-git init
-git add .
-git commit -m "Initial LCE commit"
-git remote add origin https://github.com/accord/lce.git
-git push -u origin main
+cd XLCU
+docker compose up -d
 ```
 
 ---
