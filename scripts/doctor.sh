@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LCE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 FETCH_CHILDREN_SCRIPT="${SCRIPT_DIR}/fetch_children.sh"
+LCE_AUTO_FETCH_CHILDREN="${LCE_AUTO_FETCH_CHILDREN:-1}"
 
 if [[ -d "${LCE_DIR}/../zebra_v1" || -d "${LCE_DIR}/../ERPNext_Zebra_stabil_enterprise_version" || -d "${LCE_DIR}/../rfid" || -d "${LCE_DIR}/../ERPNext_UHFReader288_integration" ]]; then
   WORK_DIR="$(cd -- "${LCE_DIR}/.." && pwd)"
@@ -12,29 +13,42 @@ else
 fi
 WORK_DIR="${LCE_WORK_DIR:-${WORK_DIR}}"
 
-ZEBRA_DIR="${LCE_ZEBRA_HOST_DIR:-}"
-if [[ -z "${ZEBRA_DIR}" ]]; then
-  if [[ -d "${WORK_DIR}/zebra_v1" ]]; then
-    ZEBRA_DIR="${WORK_DIR}/zebra_v1"
-  elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
-    ZEBRA_DIR="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
-  elif [[ -d "${LCE_DIR}/zebra_v1" ]]; then
-    ZEBRA_DIR="${LCE_DIR}/zebra_v1"
-  elif [[ -d "${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
-    ZEBRA_DIR="${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version"
+detect_child_dirs() {
+  ZEBRA_DIR="${LCE_ZEBRA_HOST_DIR:-}"
+  if [[ -z "${ZEBRA_DIR}" ]]; then
+    if [[ -d "${WORK_DIR}/zebra_v1" ]]; then
+      ZEBRA_DIR="${WORK_DIR}/zebra_v1"
+    elif [[ -d "${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
+      ZEBRA_DIR="${WORK_DIR}/ERPNext_Zebra_stabil_enterprise_version"
+    elif [[ -d "${LCE_DIR}/zebra_v1" ]]; then
+      ZEBRA_DIR="${LCE_DIR}/zebra_v1"
+    elif [[ -d "${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version" ]]; then
+      ZEBRA_DIR="${LCE_DIR}/ERPNext_Zebra_stabil_enterprise_version"
+    fi
   fi
-fi
 
-RFID_DIR="${LCE_RFID_HOST_DIR:-}"
-if [[ -z "${RFID_DIR}" ]]; then
-  if [[ -d "${WORK_DIR}/rfid" ]]; then
-    RFID_DIR="${WORK_DIR}/rfid"
-  elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration" ]]; then
-    RFID_DIR="${WORK_DIR}/ERPNext_UHFReader288_integration"
-  elif [[ -d "${LCE_DIR}/rfid" ]]; then
-    RFID_DIR="${LCE_DIR}/rfid"
-  elif [[ -d "${LCE_DIR}/ERPNext_UHFReader288_integration" ]]; then
-    RFID_DIR="${LCE_DIR}/ERPNext_UHFReader288_integration"
+  RFID_DIR="${LCE_RFID_HOST_DIR:-}"
+  if [[ -z "${RFID_DIR}" ]]; then
+    if [[ -d "${WORK_DIR}/rfid" ]]; then
+      RFID_DIR="${WORK_DIR}/rfid"
+    elif [[ -d "${WORK_DIR}/ERPNext_UHFReader288_integration" ]]; then
+      RFID_DIR="${WORK_DIR}/ERPNext_UHFReader288_integration"
+    elif [[ -d "${LCE_DIR}/rfid" ]]; then
+      RFID_DIR="${LCE_DIR}/rfid"
+    elif [[ -d "${LCE_DIR}/ERPNext_UHFReader288_integration" ]]; then
+      RFID_DIR="${LCE_DIR}/ERPNext_UHFReader288_integration"
+    fi
+  fi
+}
+
+detect_child_dirs
+
+if [[ ! -d "${ZEBRA_DIR}" && ! -d "${RFID_DIR}" && "${LCE_AUTO_FETCH_CHILDREN}" == "1" ]]; then
+  if command -v git >/dev/null 2>&1; then
+    echo "INFO: Child repos topilmadi. Avtomatik yuklab olyapman (git clone)..." >&2
+    LCE_WORK_DIR="${WORK_DIR}" bash "${FETCH_CHILDREN_SCRIPT}"
+    # Re-detect after fetch.
+    detect_child_dirs
   fi
 fi
 
@@ -69,6 +83,9 @@ fi
 
 if [[ ! -d "${ZEBRA_DIR}" && ! -d "${RFID_DIR}" ]]; then
   echo "ERROR: No child repos found (zebra/rfid)." >&2
+  if [[ "${LCE_AUTO_FETCH_CHILDREN}" == "1" ]]; then
+    echo "Auto-fetch yoqilgan bo'lsa ham yuklab bo'lmadi. Internet/git ni tekshiring." >&2
+  fi
   echo "Run: bash \"${FETCH_CHILDREN_SCRIPT}\"" >&2
   exit 1
 fi
