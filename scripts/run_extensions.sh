@@ -882,13 +882,18 @@ if [[ -z "${LCE_CHILDREN_TARGET:-}" ]]; then
     echo "Select extension to start:"
     echo "  1) Zebra"
     echo "  2) RFID"
-    read -r -p "Choice [1-2]: " choice
+    echo "  3) All (Zebra + RFID)"
+    read -r -p "Choice [1-3] (default: 3): " choice
     case "${choice}" in
       2)
         LCE_CHILDREN_TARGET="rfid"
         ;;
-      1|"")
+      1)
         LCE_CHILDREN_TARGET="zebra"
+        LCE_SHOW_ZEBRA_TUI="1"
+        ;;
+      3|"")
+        LCE_CHILDREN_TARGET="all"
         LCE_SHOW_ZEBRA_TUI="1"
         ;;
       *)
@@ -897,7 +902,7 @@ if [[ -z "${LCE_CHILDREN_TARGET:-}" ]]; then
         ;;
     esac
   else
-    LCE_CHILDREN_TARGET="zebra"
+    LCE_CHILDREN_TARGET="all"
   fi
 fi
 

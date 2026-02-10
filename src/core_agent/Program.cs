@@ -61,6 +61,9 @@ static async Task RunAsync(CoreConfig config, LocalCache cache, PostgresCache? p
 
     var sendLock = new SemaphoreSlim(1, 1);
     var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    var zebraLock = new SemaphoreSlim(1, 1);
+    var rfidLock = new SemaphoreSlim(1, 1);
+    var commandGate = new SemaphoreSlim(config.MaxConcurrentCommands, config.MaxConcurrentCommands);
 
     await SendAsync(ws, sendLock, new
     {
@@ -73,6 +76,7 @@ static async Task RunAsync(CoreConfig config, LocalCache cache, PostgresCache? p
     var authed = false;
     var helloSent = false;
     using var statusCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+    using var commandCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
     var statusTask = Task.Run(() => StatusLoop(ws, sendLock, http, config, cache, pgCache, statusCts.Token), statusCts.Token);
 
     // initial cache sync
@@ -120,8 +124,28 @@ static async Task RunAsync(CoreConfig config, LocalCache cache, PostgresCache? p
             {
                 var requestId = root.GetProperty("request_id").GetString() ?? "";
                 var name = root.GetProperty("name").GetString() ?? "";
-                var payload = root.TryGetProperty("payload", out var p) ? p : default;
-                await HandleCommand(ws, sendLock, http, config, cache, pgCache, requestId, name, payload, ct);
+                var payload = root.TryGetProperty("payload", out var p) ? p.Clone() : default;
+
+                // Run commands concurrently so slow IO (USB/LAN) doesn't block the whole agent.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await commandGate.WaitAsync(commandCts.Token);
+                        try
+                        {
+                            await HandleCommand(ws, sendLock, http, config, cache, pgCache, requestId, name, payload, zebraLock, rfidLock, commandCts.Token);
+                        }
+                        finally
+                        {
+                            commandGate.Release();
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore (shutdown / socket closed).
+                    }
+                }, commandCts.Token);
             }
         }
         catch (Exception ex)
@@ -131,11 +155,13 @@ static async Task RunAsync(CoreConfig config, LocalCache cache, PostgresCache? p
     }
 
     statusCts.Cancel();
+    commandCts.Cancel();
     try { await statusTask; } catch { }
 }
 
 static async Task HandleCommand(ClientWebSocket ws, SemaphoreSlim sendLock, HttpClient http, CoreConfig config,
-    LocalCache cache, PostgresCache? pgCache, string requestId, string name, JsonElement payload, CancellationToken ct)
+    LocalCache cache, PostgresCache? pgCache, string requestId, string name, JsonElement payload,
+    SemaphoreSlim zebraLock, SemaphoreSlim rfidLock, CancellationToken ct)
 {
     try
     {
@@ -149,35 +175,51 @@ static async Task HandleCommand(ClientWebSocket ws, SemaphoreSlim sendLock, Http
             }
             case "print_label":
             {
-                // EPC conflict check via LCE
-                if (payload.TryGetProperty("epc", out var epcProp))
+                await zebraLock.WaitAsync(ct);
+                try
                 {
-                    var epcVal = epcProp.GetString();
-                    if (!string.IsNullOrWhiteSpace(epcVal))
+                    // EPC conflict check via LCE
+                    if (payload.TryGetProperty("epc", out var epcProp))
                     {
-                        var exists = await CheckEpcAsync(http, config, epcVal!, ct);
-                        if (exists)
+                        var epcVal = epcProp.GetString();
+                        if (!string.IsNullOrWhiteSpace(epcVal))
                         {
-                            await SendResult(ws, sendLock, requestId, false, new { error = "epc_conflict" }, ct);
-                            break;
+                            var exists = await CheckEpcAsync(http, config, epcVal!, ct);
+                            if (exists)
+                            {
+                                await SendResult(ws, sendLock, requestId, false, new { error = "epc_conflict" }, ct);
+                                break;
+                            }
                         }
                     }
+                    var result = await PrintLabelAsync(http, config.ZebraUrl, payload, ct);
+                    await SendResult(ws, sendLock, requestId, true, result, ct);
                 }
-                var result = await PrintLabelAsync(http, config.ZebraUrl, payload, ct);
-                await SendResult(ws, sendLock, requestId, true, result, ct);
+                finally
+                {
+                    zebraLock.Release();
+                }
                 break;
             }
             case "rfid_write":
             {
-                var epc = payload.TryGetProperty("epc", out var epcProp) ? epcProp.GetString() : null;
-                if (string.IsNullOrWhiteSpace(epc))
+                await rfidLock.WaitAsync(ct);
+                try
                 {
-                    await SendResult(ws, sendLock, requestId, false, new { error = "epc missing" }, ct);
-                    break;
+                    var epc = payload.TryGetProperty("epc", out var epcProp) ? epcProp.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(epc))
+                    {
+                        await SendResult(ws, sendLock, requestId, false, new { error = "epc missing" }, ct);
+                        break;
+                    }
+                    var result = await RfidWriteAsync(http, config.RfidUrl, epc!, ct);
+                    await RegisterEpcAsync(http, config, epc!, ct);
+                    await SendResult(ws, sendLock, requestId, true, result, ct);
                 }
-                var result = await RfidWriteAsync(http, config.RfidUrl, epc!, ct);
-                await RegisterEpcAsync(http, config, epc!, ct);
-                await SendResult(ws, sendLock, requestId, true, result, ct);
+                finally
+                {
+                    rfidLock.Release();
+                }
                 break;
             }
             case "health":
@@ -522,7 +564,8 @@ record CoreConfig(
     string CorePgUrl,
     string CorePgSchema,
     string CacheDir,
-    int StatusIntervalMs)
+    int StatusIntervalMs,
+    int MaxConcurrentCommands)
 {
     public static CoreConfig Load()
     {
@@ -536,8 +579,9 @@ record CoreConfig(
         var corePgSchema = Environment.GetEnvironmentVariable("CORE_PG_SCHEMA") ?? "core_cache";
         var cacheDir = Environment.GetEnvironmentVariable("CORE_CACHE_DIR") ?? Path.Combine(AppContext.BaseDirectory, "cache");
         var statusMs = ParseInt(Environment.GetEnvironmentVariable("CORE_STATUS_MS"), 10000);
+        var maxConcurrent = ParseInt(Environment.GetEnvironmentVariable("CORE_MAX_CONCURRENCY"), 4);
 
-        return new CoreConfig(wsUrl, deviceId, token, zebraUrl, rfidUrl, apiBase, corePgUrl, corePgSchema, cacheDir, statusMs);
+        return new CoreConfig(wsUrl, deviceId, token, zebraUrl, rfidUrl, apiBase, corePgUrl, corePgSchema, cacheDir, statusMs, maxConcurrent);
     }
 
     private static int ParseInt(string? value, int fallback)
