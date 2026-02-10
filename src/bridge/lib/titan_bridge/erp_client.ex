@@ -93,6 +93,8 @@ defmodule TitanBridge.ErpClient do
         end
 
       exc = decoded["exc_type"] || decoded["exception"]
+      exc_type = decoded["exc_type"]
+      exception = decoded["exception"]
 
       cond do
         is_binary(exc) and is_binary(msg) ->
@@ -100,6 +102,18 @@ defmodule TitanBridge.ErpClient do
 
         is_binary(msg) ->
           msg |> String.replace(~r/\s+/, " ") |> String.slice(0, 220)
+
+        # Some ERPNext errors (e.g. auth) only return `exc_type` + traceback without `message`.
+        is_binary(exc_type) and String.trim(exc_type) != "" ->
+          exc_type |> String.replace(~r/\s+/, " ") |> String.slice(0, 220)
+
+        is_binary(exception) and String.trim(exception) != "" ->
+          exception
+          |> String.split(".")
+          |> List.last()
+          |> to_string()
+          |> String.replace(~r/\s+/, " ")
+          |> String.slice(0, 220)
 
         true ->
           nil

@@ -635,7 +635,18 @@ defmodule TitanBridge.Telegram.RfidBot do
         send_message(token, chat_id, "EPC li draft topilmadi.")
 
       {:error, reason} ->
-        send_message(token, chat_id, "Xato: #{inspect(reason)}")
+        msg =
+          cond do
+            is_binary(reason) and String.starts_with?(reason, "ERP GET failed: 401") ->
+              "ERPNext auth xato (401).\n" <>
+                "API KEY/SECRET noto'g'ri yoki o'zgargan bo'lishi mumkin.\n\n" <>
+                "/start yuborib qayta sozlang."
+
+            true ->
+              "Xato: #{ErpClient.human_error(reason)}"
+          end
+
+        send_message(token, chat_id, msg)
     end
   end
 
