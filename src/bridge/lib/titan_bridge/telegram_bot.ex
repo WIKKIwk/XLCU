@@ -126,33 +126,18 @@ defmodule TitanBridge.Telegram.Bot do
     user = message["from"] || %{}
 
     cond do
-      text == "/start" ->
+      text == "/start" or text == "/reset" ->
         delete_message(token, chat_id, msg_id)
-        case SettingsStore.get() do
-          %{erp_url: url, erp_token: erp_token}
-          when is_binary(url) and is_binary(erp_token) and byte_size(erp_token) > 0 ->
-            url = String.trim(url)
+        # /start should ALWAYS allow re-configuring ERP settings. We only clear ERP-related
+        # fields (keeping Telegram token + child URLs) and purge caches to avoid stale data.
+        _ = SettingsStore.upsert(%{erp_url: nil, erp_token: nil, warehouse: nil})
+        _ = SyncState.reset_all()
+        _ = Cache.purge_all()
 
-            if url != "" do
-              clear_temp(chat_id)
-              set_state(chat_id, "ready")
-
-              send_message(
-                token,
-                chat_id,
-                "Sozlamalar topildi (ERP: #{url}).\n" <>
-                  "Davom etish uchun /batch buyrug'ini bering.\n" <>
-                  "Qayta sozlash kerak bo'lsa /start ni yuboring va yangi ERP ma'lumotlarini kiriting."
-              )
-            else
-              set_state(chat_id, "awaiting_erp_url")
-              setup_prompt(token, chat_id, "ERP manzilini kiriting:")
-            end
-
-          _ ->
-            set_state(chat_id, "awaiting_erp_url")
-            setup_prompt(token, chat_id, "ERP manzilini kiriting:")
-        end
+        delete_flow_msg(token, chat_id)
+        clear_temp(chat_id)
+        set_state(chat_id, "awaiting_erp_url")
+        setup_prompt(token, chat_id, "ERP manzilini kiriting:")
 
       text == "/batch" or text == "/batch start" ->
         delete_message(token, chat_id, msg_id)
@@ -286,7 +271,22 @@ defmodule TitanBridge.Telegram.Bot do
         end
 
       _ ->
-        :ok
+        # If scale_read failed (offline/timeout) we still want operators to be able to type
+        # manual weight while staying in batch mode.
+        case {get_temp(chat_id, "batch_active"), parse_weight(text)} do
+          {"true", {:ok, weight}} ->
+            product_id = get_temp(chat_id, "pending_product") || get_temp(chat_id, "batch_product")
+
+            if product_id do
+              delete_message(token, chat_id, msg_id)
+              process_print(token, chat_id, product_id, weight, true)
+            else
+              :ok
+            end
+
+          _ ->
+            :ok
+        end
     end
   end
 
@@ -464,18 +464,8 @@ defmodule TitanBridge.Telegram.Bot do
         prompt_manual_weight(token, chat_id, product_id)
 
       {:error, reason} ->
-        if allow_simulation?() do
-          prompt_manual_weight(token, chat_id, product_id)
-        else
-          ErpClient.create_log(%{
-            "device_id" => device_id(),
-            "action" => "error",
-            "status" => "Error",
-            "message" => "#{reason}"
-          })
-
-          send_message(token, chat_id, friendly_error(reason))
-        end
+        Logger.warning("scale_read failed (#{inspect(reason)}); falling back to manual weight input")
+        prompt_manual_weight(token, chat_id, product_id)
     end
   end
 
@@ -491,6 +481,10 @@ defmodule TitanBridge.Telegram.Bot do
   end
 
   defp process_print(token, chat_id, product_id, weight, manual?) do
+    Logger.info(
+      "[tg] print flow: chat_id=#{chat_id} product_id=#{product_id} weight=#{weight} manual=#{manual?}"
+    )
+
     with {:ok, epc} <- next_epc_checked() do
       print_payload = %{
         "epc" => epc,

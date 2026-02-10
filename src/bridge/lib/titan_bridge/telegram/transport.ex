@@ -8,6 +8,9 @@ defmodule TitanBridge.Telegram.Transport do
   @base_url "https://api.telegram.org/bot"
 
   def get_updates(token, offset, timeout_sec, opts \\ []) do
+    # Telegram getUpdates uses long-polling (timeout is in seconds). Finch/Mint default
+    # receive_timeout is often shorter, causing intermittent :timeout errors and missed updates.
+    opts = Keyword.put_new(opts, :receive_timeout, (timeout_sec + 5) * 1000)
     url = "#{@base_url}#{token}/getUpdates?timeout=#{timeout_sec}&offset=#{offset}"
 
     case Finch.build(:get, url) |> Finch.request(TitanBridgeFinch, request_opts(opts)) do
@@ -119,10 +122,9 @@ defmodule TitanBridge.Telegram.Transport do
   end
 
   defp request_opts(opts) do
-    case Keyword.get(opts, :receive_timeout) do
-      nil -> []
-      timeout -> [receive_timeout: timeout]
-    end
+    # Avoid indefinite hangs on Telegram API calls.
+    timeout = Keyword.get(opts, :receive_timeout, 10_000)
+    [receive_timeout: timeout]
   end
 
   defp log_error(opts, message) do

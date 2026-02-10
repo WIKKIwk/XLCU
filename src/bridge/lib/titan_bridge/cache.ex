@@ -40,6 +40,29 @@ defmodule TitanBridge.Cache do
     :ok
   end
 
+  @doc """
+  Deletes ALL cached ERP records (DB + ETS).
+
+  Use this when ERP URL/token changes to avoid showing stale products/warehouses/bins.
+  """
+  def purge_all do
+    # DB
+    _ = Repo.delete_all(Item)
+    _ = Repo.delete_all(Warehouse)
+    _ = Repo.delete_all(Bin)
+    _ = Repo.delete_all(StockDraft)
+
+    # ETS
+    ensure_tables()
+    :ets.delete_all_objects(@items_table)
+    :ets.delete_all_objects(@warehouses_table)
+    :ets.delete_all_objects(@bins_table)
+    :ets.delete_all_objects(@drafts_table)
+    :ets.delete_all_objects(@epc_drafts_table)
+    :ets.delete_all_objects(@meta_table)
+    :ok
+  end
+
   def version(entity) do
     case :ets.lookup(@meta_table, {entity, :version}) do
       [{{^entity, :version}, v}] -> v
