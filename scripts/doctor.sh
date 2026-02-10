@@ -78,17 +78,25 @@ if ! bash -n "${LCE_DIR}/scripts/run_extensions.sh"; then
   exit 1
 fi
 
+if ! command -v git >/dev/null 2>&1; then
+  echo "WARNING: git not found. Auto-download of child repos will not work." >&2
+  echo "TIP: make bootstrap" >&2
+fi
+
 if command -v docker >/dev/null 2>&1; then
   if docker info >/dev/null 2>&1; then
     echo "Docker: OK"
   else
     echo "ERROR: Docker is installed but the daemon is not running (docker info failed)." >&2
+    echo "TIP: sudo systemctl start docker" >&2
+    echo "TIP: make bootstrap" >&2
     exit 1
   fi
 else
   echo "WARNING: Docker not found. This will fall back to local 'mix' if available." >&2
   if ! command -v mix >/dev/null 2>&1; then
     echo "ERROR: Neither Docker nor mix are available. Install Docker (recommended) or Elixir/Mix." >&2
+    echo "TIP: make bootstrap" >&2
     exit 1
   fi
 fi

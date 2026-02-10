@@ -124,10 +124,20 @@ Bu rejimda host kompyuterda Elixir/.NET/Java/Node o'rnatish shart emas (faqat Do
 
 ```bash
 cd LCE
+make bootstrap   # Ubuntu/Arch: git + docker va kerakli utilitalar
 make doctor
 make run
 # yoki majburan docker:
 # make run-docker
+```
+
+USB/Serial (printer/RFID/scale) bilan ishlash kerak bo'lsa, `make run` Docker'ni avtomatik `--privileged` bilan ishga tushiradi.
+Kerak bo'lmasa o'chirib qo'ying:
+
+```bash
+make run LCE_DOCKER_PRIVILEGED=0
+# ixtiyoriy: faqat aniq device'larni berish:
+make run-docker LCE_DOCKER_PRIVILEGED=0 LCE_DOCKER_DEVICES=/dev/ttyUSB0,/dev/usb/lp0
 ```
 
 `make run` birinchi marta ishga tushganda, kerakli child repo'lar (Zebra/RFID) topilmasa ularni avtomatik yuklab oladi:

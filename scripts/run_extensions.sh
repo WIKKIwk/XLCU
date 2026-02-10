@@ -40,6 +40,8 @@ LCE_DOCKER_NETWORK="lce-bridge-net"
 LCE_DOCKER_DNS_PRIMARY="${LCE_DOCKER_DNS_PRIMARY:-1.1.1.1}"
 LCE_DOCKER_DNS_SECONDARY="${LCE_DOCKER_DNS_SECONDARY:-8.8.8.8}"
 LCE_DOCKER_RESET="${LCE_DOCKER_RESET:-0}"
+LCE_DOCKER_PRIVILEGED="${LCE_DOCKER_PRIVILEGED:-0}" # 1 = --privileged (USB/serial access)
+LCE_DOCKER_DEVICES="${LCE_DOCKER_DEVICES:-}"        # optional: comma-separated --device entries (e.g. /dev/ttyUSB0,/dev/usb/lp0)
 LCE_FORCE_DOCKER="${LCE_FORCE_DOCKER:-0}"
 LCE_FORCE_LOCAL="${LCE_FORCE_LOCAL:-0}"
 LCE_PREFER_DOCKER="${LCE_PREFER_DOCKER:-1}"
@@ -122,6 +124,24 @@ python_bin() {
     return 0
   fi
   return 1
+}
+
+sha256_file() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${file}" | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${file}" | awk '{print $1}'
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    # Output format: "SHA2-256(file)= <hash>"
+    openssl dgst -sha256 "${file}" | awk '{print $NF}'
+    return 0
+  fi
+  echo ""
 }
 
 ensure_cloak_key() {
@@ -470,17 +490,34 @@ ensure_lce_dev_image() {
     exit 1
   fi
 
-  if [[ "${LCE_DEV_IMAGE_REBUILD}" == "1" ]]; then
-    docker rmi "${LCE_DEV_IMAGE}" >/dev/null 2>&1 || true
-  fi
-
-  if docker image inspect "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
-    return 0
-  fi
-
   if [[ ! -f "${LCE_DEV_DOCKERFILE}" ]]; then
     echo "ERROR: Missing dev Dockerfile: ${LCE_DEV_DOCKERFILE}" >&2
     exit 1
+  fi
+
+  # Auto-rebuild the dev image when Dockerfile.dev changes; otherwise users can
+  # keep running an old image where USB libs/tools are missing.
+  local dockerfile_hash_file="${WORK_DIR}/.cache/lce-dev-image.dockerfile.sha256"
+  mkdir -p "$(dirname -- "${dockerfile_hash_file}")" >/dev/null 2>&1 || true
+  local dockerfile_hash=""
+  dockerfile_hash="$(sha256_file "${LCE_DEV_DOCKERFILE}")"
+  local prev_hash=""
+  if [[ -f "${dockerfile_hash_file}" ]]; then
+    prev_hash="$(cat "${dockerfile_hash_file}" 2>/dev/null || true)"
+    prev_hash="$(trim_token "${prev_hash}")"
+  fi
+
+  local want_rebuild="${LCE_DEV_IMAGE_REBUILD}"
+  if [[ -n "${dockerfile_hash}" && "${dockerfile_hash}" != "${prev_hash}" ]]; then
+    want_rebuild=1
+  fi
+
+  if [[ "${want_rebuild}" == "1" ]]; then
+    docker rmi "${LCE_DEV_IMAGE}" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "${want_rebuild}" != "1" ]] && docker image inspect "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
+    return 0
   fi
 
   if [[ "${LCE_QUIET}" != "1" ]]; then
@@ -528,6 +565,9 @@ ensure_lce_dev_image() {
         -t "${LCE_DEV_IMAGE}" \
         -f "${LCE_DEV_DOCKERFILE}" \
         "${LCE_DEV_BUILD_CONTEXT}" >>"${build_log}" 2>&1; then
+        if [[ -n "${dockerfile_hash}" ]]; then
+          printf '%s' "${dockerfile_hash}" > "${dockerfile_hash_file}" 2>/dev/null || true
+        fi
         return 0
       fi
     fi
@@ -536,6 +576,10 @@ ensure_lce_dev_image() {
     echo "Build log: ${build_log}" >&2
     tail -n 80 "${build_log}" >&2 || true
     exit 1
+  fi
+
+  if [[ -n "${dockerfile_hash}" ]]; then
+    printf '%s' "${dockerfile_hash}" > "${dockerfile_hash_file}" 2>/dev/null || true
   fi
 }
 
@@ -723,6 +767,19 @@ start_lce_docker() {
     --add-host=host.docker.internal:host-gateway
     --restart no
   )
+
+  # Hardware mode: give the container full device access (USB/serial/printer).
+  # This is intentionally opt-in because it's a big security escalation.
+  if [[ "${LCE_DOCKER_PRIVILEGED}" == "1" ]]; then
+    docker_args+=( --privileged )
+  fi
+  if [[ -n "${LCE_DOCKER_DEVICES}" ]]; then
+    while IFS= read -r dev; do
+      dev="$(trim_token "${dev}")"
+      [[ -z "${dev}" ]] && continue
+      docker_args+=( --device "${dev}" )
+    done < <(printf '%s' "${LCE_DOCKER_DEVICES}" | tr ',' '\n')
+  fi
 
   if [[ -n "${ZEBRA_DIR}" ]]; then
     docker_args+=( -e LCE_ZEBRA_DIR="/zebra_v1" -v "${ZEBRA_DIR}:/zebra_v1" )
@@ -1080,6 +1137,7 @@ start_core_agent() {
 
   docker run -d --name "${CORE_AGENT_CONTAINER}" --network "${LCE_DOCKER_NETWORK}" \
     --add-host=host.docker.internal:host-gateway \
+    $( [[ "${LCE_DOCKER_PRIVILEGED}" == "1" ]] && echo --privileged ) \
     -e CORE_WS_URL="${docker_ws_url}" \
     -e CORE_DEVICE_ID="${CORE_DEVICE_ID:-CORE-01}" \
     -e LCE_API_BASE="${docker_api_base}" \

@@ -24,6 +24,9 @@ RUN apt-get update -y \
     build-essential \
     nodejs \
     openjdk-17-jre-headless \
+    # USB helpers (Zebra USB transport / diagnostics)
+    libusb-1.0-0 \
+    usbutils \
     # dotnet runtime deps
     libicu72 \
     libssl3 \
@@ -42,4 +45,3 @@ ENV PATH="/usr/share/dotnet:${PATH}"
 WORKDIR /app
 
 CMD ["bash"]
-
