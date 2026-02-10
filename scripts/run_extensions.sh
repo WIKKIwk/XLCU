@@ -132,9 +132,21 @@ docker_rootless() {
   if ! command -v docker >/dev/null 2>&1; then
     return 1
   fi
+
+  # Docker versions differ in which fields are available in `docker info --format`.
+  # Prefer the dedicated field when available, otherwise fall back to SecurityOptions.
   local rootless=""
   rootless="$(docker info --format '{{.Rootless}}' 2>/dev/null || true)"
-  [[ "${rootless}" == "true" ]]
+  if [[ "${rootless}" == "true" ]]; then
+    return 0
+  fi
+  if [[ "${rootless}" == "false" ]]; then
+    return 1
+  fi
+
+  local sec=""
+  sec="$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null || true)"
+  [[ "${sec}" == *rootless* ]]
 }
 
 sha256_file() {
