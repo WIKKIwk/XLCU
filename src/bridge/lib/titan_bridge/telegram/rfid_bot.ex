@@ -22,6 +22,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   @poll_default_ms 1200
   @poll_timeout_default 25
   @drafts_cache_ttl_ms 60_000
+  @submit_page_size 8
 
   def start_link(_args) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -83,8 +84,13 @@ defmodule TitanBridge.Telegram.RfidBot do
          "message" =>
            %{"text" => text, "chat" => %{"id" => chat_id}, "message_id" => msg_id} = msg
        }) do
+    raw = String.trim(text || "")
+    tokens = String.split(raw, ~r/\s+/, trim: true)
+    command_token = List.first(tokens) || ""
+
     # "/command@botname" → "/command"
-    cmd = text |> String.trim() |> String.split("@") |> hd() |> String.downcase()
+    cmd = command_token |> String.split("@") |> hd() |> String.downcase()
+    args = tokens |> Enum.drop(1) |> Enum.join(" ") |> String.trim()
     user = msg["from"] || %{}
 
     user_id =
@@ -101,7 +107,12 @@ defmodule TitanBridge.Telegram.RfidBot do
 
       cmd == "/submit" ->
         delete_message(token, chat_id, msg_id)
-        handle_submit_prompt(token, chat_id, user_id)
+
+        if args != "" do
+          handle_submit_selection(token, chat_id, user_id, args)
+        else
+          handle_submit_prompt(token, chat_id, user_id)
+        end
 
       cmd == "/scan" ->
         delete_message(token, chat_id, msg_id)
@@ -153,6 +164,7 @@ defmodule TitanBridge.Telegram.RfidBot do
     chat_id = cb["message"]["chat"]["id"]
     cb_id = cb["id"]
     data = cb["data"] || ""
+    msg_id = cb["message"]["message_id"]
 
     user_id =
       case cb do
@@ -163,13 +175,36 @@ defmodule TitanBridge.Telegram.RfidBot do
     case data do
       "retry_scan" ->
         answer_callback(token, cb_id, "Tekshirilmoqda...")
-        delete_message(token, chat_id, cb["message"]["message_id"])
+        delete_message(token, chat_id, msg_id)
         handle_scan(token, chat_id)
 
       "retry_submit" ->
         answer_callback(token, cb_id, "Tekshirilmoqda...")
-        delete_message(token, chat_id, cb["message"]["message_id"])
+        delete_message(token, chat_id, msg_id)
         handle_submit_prompt(token, chat_id, user_id)
+
+      "draft_refresh" ->
+        answer_callback(token, cb_id, "Yangilanmoqda...")
+        page = submit_page(chat_id)
+        show_submit_menu(token, chat_id, user_id, page, true, msg_id)
+
+      "draft_page:" <> page_str ->
+        answer_callback(token, cb_id)
+
+        page =
+          case Integer.parse(page_str) do
+            {n, _} when n >= 0 -> n
+            _ -> 0
+          end
+
+        show_submit_menu(token, chat_id, user_id, page, false, msg_id)
+
+      "submit_draft:" <> name ->
+        answer_callback(token, cb_id, "Submit qilinyapti...")
+        name = String.trim(name)
+        # Make sure progress/result edits the message the user clicked.
+        put_temp(chat_id, "submit_flow_msg_id", msg_id)
+        handle_submit_selection(token, chat_id, user_id, name)
 
       _ ->
         answer_callback(token, cb_id)
@@ -278,29 +313,10 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp handle_submit_prompt(token, chat_id, user_id \\ nil) do
     case ErpClient.ping() do
       {:ok, _} ->
-        put_temp(chat_id, "inline_mode", "draft_submit")
         # Force refresh so newly created drafts show up immediately.
-        # Inline-query cache is keyed by Telegram *user id*, while flow messages are keyed by chat id.
         clear_drafts_cache(chat_id, user_id)
-
-        keyboard = %{
-          "inline_keyboard" => [
-            [%{"text" => "Draft tanlash", "switch_inline_query_current_chat" => "draft "}]
-          ]
-        }
-
-        text = "Draftlarni tanlang: pastdagi tugmani bosing."
-        flow_mid = get_temp(chat_id, "submit_flow_msg_id")
-
-        mid =
-          if is_integer(flow_mid) do
-            _ = edit_message(token, chat_id, flow_mid, text, keyboard)
-            flow_mid
-          else
-            send_message(token, chat_id, text, keyboard)
-          end
-
-        put_temp(chat_id, "submit_flow_msg_id", mid)
+        put_temp(chat_id, "inline_mode", "draft_submit")
+        show_submit_menu(token, chat_id, user_id, 0, true)
 
       {:error, reason} ->
         keyboard = %{
@@ -316,6 +332,135 @@ defmodule TitanBridge.Telegram.RfidBot do
     end
   end
 
+  defp submit_page(chat_id) do
+    case get_temp(chat_id, "submit_page") do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> 0
+    end
+  end
+
+  defp show_submit_menu(token, chat_id, user_id, page, refresh?, flow_mid \\ nil)
+
+  defp show_submit_menu(token, chat_id, user_id, page, refresh?, flow_mid)
+       when is_integer(page) and page >= 0 do
+    if refresh? do
+      clear_drafts_cache(chat_id, user_id)
+    end
+
+    drafts =
+      case get_drafts_cache(chat_id) do
+        {:ok, rows} ->
+          rows
+
+        :miss ->
+          rows = fetch_submit_drafts()
+          put_drafts_cache(chat_id, rows)
+          rows
+      end
+
+    if drafts == [] do
+      send_message(token, chat_id, "Draft topilmadi. /list bilan tekshirib ko'ring.")
+    else
+      total = length(drafts)
+      pages = max(div(total + @submit_page_size - 1, @submit_page_size), 1)
+      page = min(page, pages - 1)
+      put_temp(chat_id, "submit_page", page)
+
+      text =
+        "Draft tanlang (#{page + 1}/#{pages}):\n\n" <>
+          "Agar inline qidirish yoqilgan bo'lsa, tugma orqali qidirishingiz mumkin."
+
+      keyboard = build_submit_keyboard(drafts, page, pages)
+
+      existing_mid =
+        cond do
+          is_integer(flow_mid) -> flow_mid
+          true -> get_temp(chat_id, "submit_flow_msg_id")
+        end
+
+      mid =
+        if is_integer(existing_mid) do
+          _ = edit_message(token, chat_id, existing_mid, text, keyboard)
+          existing_mid
+        else
+          send_message(token, chat_id, text, keyboard)
+        end
+
+      put_temp(chat_id, "submit_flow_msg_id", mid)
+    end
+  end
+
+  defp show_submit_menu(token, chat_id, user_id, _page, refresh?, flow_mid) do
+    show_submit_menu(token, chat_id, user_id, 0, refresh?, flow_mid)
+  end
+
+  defp build_submit_keyboard(drafts, page, pages) do
+    start = page * @submit_page_size
+    slice = drafts |> Enum.drop(start) |> Enum.take(@submit_page_size)
+
+    draft_rows =
+      slice
+      |> Enum.map(fn d ->
+        name = to_string(d.name || "")
+
+        display_epc =
+          (d.items || [])
+          |> Enum.map(&Map.get(&1, :barcode))
+          |> Enum.find(fn v -> is_binary(v) and String.trim(v) != "" end)
+
+        display_epc =
+          cond do
+            is_binary(display_epc) and String.trim(display_epc) != "" ->
+              String.trim(display_epc)
+
+            true ->
+              (d.epcs || [])
+              |> Enum.find(fn v -> is_binary(v) and String.trim(v) != "" end)
+              |> case do
+                v when is_binary(v) -> String.trim(v)
+                _ -> ""
+              end
+          end
+
+        title =
+          if display_epc != "" do
+            display_epc |> String.slice(0, 24)
+          else
+            name |> String.slice(0, 24)
+          end
+
+        [%{"text" => title, "callback_data" => "submit_draft:" <> name}]
+      end)
+
+    nav_buttons =
+      []
+      |> then(fn acc ->
+        if page > 0 do
+          acc ++ [%{"text" => "Oldingi", "callback_data" => "draft_page:#{page - 1}"}]
+        else
+          acc
+        end
+      end)
+      |> then(fn acc ->
+        if page + 1 < pages do
+          acc ++ [%{"text" => "Keyingi", "callback_data" => "draft_page:#{page + 1}"}]
+        else
+          acc
+        end
+      end)
+
+    nav_row = if nav_buttons != [], do: [nav_buttons], else: []
+
+    actions_row = [
+      [
+        %{"text" => "Yangilash", "callback_data" => "draft_refresh"},
+        %{"text" => "Inline qidirish", "switch_inline_query_current_chat" => "draft "}
+      ]
+    ]
+
+    %{"inline_keyboard" => draft_rows ++ nav_row ++ actions_row}
+  end
+
   defp handle_submit_selection(token, chat_id, user_id, name) do
     name = String.trim(name || "")
 
@@ -324,7 +469,10 @@ defmodule TitanBridge.Telegram.RfidBot do
     else
       keyboard = %{
         "inline_keyboard" => [
-          [%{"text" => "Yana draft tanlash", "switch_inline_query_current_chat" => "draft "}]
+          [
+            %{"text" => "Menu", "callback_data" => "draft_refresh"},
+            %{"text" => "Inline qidirish", "switch_inline_query_current_chat" => "draft "}
+          ]
         ]
       }
 
@@ -521,7 +669,19 @@ defmodule TitanBridge.Telegram.RfidBot do
           "title" => title,
           "description" => desc,
           "input_message_content" => %{
-            "message_text" => "submit_draft:" <> name
+            "message_text" =>
+              "Draft: #{name}\n" <>
+                "Submit qilish uchun tugmani bosing."
+          },
+          "reply_markup" => %{
+            "inline_keyboard" => [
+              [
+                %{
+                  "text" => "Submit qilish",
+                  "callback_data" => "submit_draft:" <> name
+                }
+              ]
+            ]
           }
         }
       end)
