@@ -170,10 +170,9 @@ bash scripts/fetch_children.sh
 ### RFID Telegram bot: draft submit (/submit)
 
 - `/reset` (yoki `/start`) — bot holatini tozalaydi va sozlashni qaytadan boshlaydi.
-- `/submit` inline mode yoqilmagan bo'lsa ham ishlaydi: bot chat ichida tugmalar bilan draft'larni chiqaradi.
-- Agar BotFather'da **Inline Mode** yoqilgan bo'lsa, `/submit` ichidagi `Inline qidirish` tugmasi orqali tez qidirish mumkin:
-  - inline natija tanlanganda chatga `submit_draft:<draft_name>` yuboriladi
-  - bot uni avtomatik o'chirib, draft'ni submit qiladi
+- `/submit` — draft'ni inline qidirish orqali tanlab submit qiladi.
+  - BotFather'da **Inline Mode** yoqilgan bo'lishi kerak.
+  - inline natija tanlanganda chatga `submit_draft:<draft_name>` yuboriladi, bot uni avtomatik o'chirib, draft'ni submit qiladi.
 
 Kerak bo'lsa lokal rejimga majburlash:
 

@@ -328,7 +328,21 @@ defmodule TitanBridge.Telegram.RfidBot do
         # Force refresh so newly created drafts show up immediately.
         clear_drafts_cache(chat_id, user_id)
         put_temp(chat_id, "inline_mode", "draft_submit")
-        show_submit_menu(token, chat_id, user_id, 0, true)
+
+        text =
+          "Draft submit qilish uchun inline qidirishni bosing.\n" <>
+            "Natijadan draft tanlang (bot chatga `submit_draft:<name>` yuboradi va uni o'chirib, submit qiladi)."
+
+        keyboard = %{
+          "inline_keyboard" => [
+            [
+              %{"text" => "Inline qidirish", "switch_inline_query_current_chat" => "draft "}
+            ]
+          ]
+        }
+
+        mid = send_message(token, chat_id, text, keyboard)
+        put_temp(chat_id, "submit_flow_msg_id", mid)
 
       {:error, reason} ->
         keyboard = %{
@@ -482,7 +496,6 @@ defmodule TitanBridge.Telegram.RfidBot do
       keyboard = %{
         "inline_keyboard" => [
           [
-            %{"text" => "Menu", "callback_data" => "draft_refresh"},
             %{"text" => "Inline qidirish", "switch_inline_query_current_chat" => "draft "}
           ]
         ]
