@@ -401,59 +401,11 @@ auto_detect_scale_port() {
     return 0
   fi
 
-  # Multiple candidates: pick interactively once and cache (best UX), otherwise require explicit env.
-  local pick="${ZEBRA_SCALE_PORT_PICK:-1}"
-  if [[ "${#candidates[@]}" -gt 1 && "${pick}" == "1" && -t 0 ]]; then
-    echo "" >&2
-    echo "Bir nechta USB-serial qurilma topildi. Tarozi (scale) qaysi portda ekanini tanlang:" >&2
-    echo "" >&2
-
-    local -a menu_labels=()
-    if [[ "${#byid_targets[@]}" -gt 0 ]]; then
-      for i in "${!byid_targets[@]}"; do
-        menu_labels+=( "${byid_targets[i]}    (${byid_paths[i]})" )
-      done
-    else
-      for i in "${!candidates[@]}"; do
-        menu_labels+=( "${candidates[i]}" )
-      done
-    fi
-
-    for i in "${!menu_labels[@]}"; do
-      printf "  %d) %s\n" "$((i + 1))" "${menu_labels[i]}" >&2
-    done
-
-    local choice=""
-    while true; do
-      read -r -p "Choice [1-${#menu_labels[@]}] (default: 1): " choice
-      choice="$(trim_token "${choice}")"
-      if [[ -z "${choice}" ]]; then
-        choice="1"
-      fi
-      if [[ "${choice}" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#menu_labels[@]} )); then
-        break
-      fi
-      echo "ERROR: noto'g'ri tanlov." >&2
-    done
-
-    local idx=$((choice - 1))
-    if [[ "${#byid_targets[@]}" -gt 0 ]]; then
-      export ZEBRA_SCALE_PORT="${byid_targets[idx]}"
-      mkdir -p "$(dirname -- "${cache_file}")" 2>/dev/null || true
-      ( umask 077 && printf '%s\n' "${byid_paths[idx]}" > "${cache_file}" ) 2>/dev/null || true
-    else
-      export ZEBRA_SCALE_PORT="${candidates[idx]}"
-      mkdir -p "$(dirname -- "${cache_file}")" 2>/dev/null || true
-      ( umask 077 && printf '%s\n' "${candidates[idx]}" > "${cache_file}" ) 2>/dev/null || true
-    fi
-
+  # Multiple candidates: no prompt by default (factory operators must not configure ports).
+  # ZebraBridge will auto-detect by probing ports; this script only sets ZEBRA_SCALE_PORT
+  # when it can do so deterministically (cache/hint/single-device).
+  if [[ "${#candidates[@]}" -gt 1 ]]; then
     return 0
-  fi
-
-  if [[ "${#candidates[@]}" -gt 1 && ! -t 0 ]]; then
-    echo "WARNING: Bir nechta serial port bor, lekin non-interactive rejim. Scale portni aniq belgilang:" >&2
-    echo "  ZEBRA_SCALE_PORT=/dev/ttyUSB0 make run" >&2
-    echo "  yoki: ZEBRA_SCALE_PORT_HINT=<by-id substring> make run" >&2
   fi
 }
 

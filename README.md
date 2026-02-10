@@ -172,11 +172,10 @@ curl -fsS http://127.0.0.1:18000/api/v1/scale
 
 Eslatma: hozircha ZebraBridge tarozi o'qish uchun **serial port** (`/dev/ttyUSB*`, `/dev/ttyACM*`) dan foydalanadi. Agar portlar bo'sh chiqsa, tarozi HID bo'lishi yoki Docker ichida device ko'rinmayotgan bo'lishi mumkin.
 
-`make run` scale portni imkon qadar **deterministik** tanlaydi:
+`make run` (va ZebraBridge) scale portni imkon qadar **avtomatik** topadi:
 
 - agar faqat bitta USB-serial port bo'lsa: avtomatik tanlaydi
-- agar bir nechta port bo'lsa: interactive rejimda (TTY) sizdan bir marta tanlov so'raydi va `.cache/zebra-scale.by-id` ga saqlab qo'yadi (keyingi startlarda avtomatik ishlaydi)
-- non-interactive (CI/server) rejimda: portni env orqali aniq berish kerak
+- agar bir nechta port bo'lsa: ZebraBridge portlarni tezkor probe qilib scale'ni o'zi topishga harakat qiladi (user'dan port so'ramaydi)
 
 Qo'lda ko'rsatish:
 
