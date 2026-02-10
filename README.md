@@ -87,11 +87,9 @@ LCE/
 │   ├── deploy.sh
 │   └── backup.sh
 │
-└── .github/                     # CI/CD
+└── .github/                     # CI
     └── workflows/
-        ├── ci.yml
-        ├── cd-staging.yml
-        └── cd-production.yml
+        └── PROJECT_TITAN_CICD.yml
 ```
 
 ## 📦 Loyiha Strukturasi
