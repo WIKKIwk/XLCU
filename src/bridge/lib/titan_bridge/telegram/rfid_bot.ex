@@ -100,8 +100,9 @@ defmodule TitanBridge.Telegram.RfidBot do
       end
 
     cond do
-      cmd == "/start" ->
+      cmd == "/start" or cmd == "/reset" ->
         delete_message(token, chat_id, msg_id)
+        reset_chat_for_setup(token, chat_id)
         set_state(chat_id, "awaiting_erp_url")
         setup_prompt(token, chat_id, "ERP manzilini kiriting:")
 
@@ -214,6 +215,17 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp handle_update(_token, _update), do: :ok
 
   # --- Setup Wizard (same as Zebra bot) ---
+
+  defp reset_chat_for_setup(token, chat_id) do
+    # If the bot was scanning, stop it first so the setup wizard doesn't compete with scan flow.
+    if get_state(chat_id) == "scanning" do
+      RfidListener.unsubscribe(self())
+      rfid_inventory_stop()
+    end
+
+    delete_setup_prompt(token, chat_id)
+    clear_temp(chat_id)
+  end
 
   defp handle_state_input(token, chat_id, text, msg_id, _user) do
     case get_state(chat_id) do
