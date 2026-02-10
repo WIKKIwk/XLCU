@@ -719,7 +719,7 @@ defmodule TitanBridge.ErpClient do
 
   defp http_get(url, token) do
     headers = auth_headers(token)
-    case Finch.build(:get, url, headers) |> Finch.request(TitanBridgeFinch) do
+    case Finch.build(:get, url, headers) |> Finch.request(TitanBridgeFinch, finch_opts()) do
       {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
         {:ok, Jason.decode!(body)}
       {:ok, %Finch.Response{status: status, body: body}} ->
@@ -731,7 +731,7 @@ defmodule TitanBridge.ErpClient do
   defp http_post(url, token, payload) do
     headers = auth_headers(token) ++ [{"content-type", "application/json"}]
     body = Jason.encode!(payload)
-    case Finch.build(:post, url, headers, body) |> Finch.request(TitanBridgeFinch) do
+    case Finch.build(:post, url, headers, body) |> Finch.request(TitanBridgeFinch, finch_opts()) do
       {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
         {:ok, Jason.decode!(body)}
       {:ok, %Finch.Response{status: status, body: body}} ->
@@ -743,12 +743,24 @@ defmodule TitanBridge.ErpClient do
   defp http_put(url, token, payload) do
     headers = auth_headers(token) ++ [{"content-type", "application/json"}]
     body = Jason.encode!(payload)
-    case Finch.build(:put, url, headers, body) |> Finch.request(TitanBridgeFinch) do
+    case Finch.build(:put, url, headers, body) |> Finch.request(TitanBridgeFinch, finch_opts()) do
       {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
         {:ok, Jason.decode!(body)}
       {:ok, %Finch.Response{status: status, body: body}} ->
         {:error, "ERP PUT failed: #{status} #{body}"}
       {:error, err} -> {:error, inspect(err)}
+    end
+  end
+
+  defp finch_opts do
+    # Hard timeouts: prevent Telegram bot flow from "freezing" if ERP becomes slow/unreachable.
+    [receive_timeout: erp_timeout_ms(), pool_timeout: 5_000]
+  end
+
+  defp erp_timeout_ms do
+    case Integer.parse(to_string(System.get_env("LCE_ERP_TIMEOUT_MS") || "")) do
+      {n, _} when n >= 1_000 and n <= 120_000 -> n
+      _ -> 15_000
     end
   end
 

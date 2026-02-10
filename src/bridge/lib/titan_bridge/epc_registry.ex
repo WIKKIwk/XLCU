@@ -44,4 +44,25 @@ defmodule TitanBridge.EpcRegistry do
   def exists?(epc) when is_binary(epc) do
     Repo.get(EpcRecord, epc) != nil
   end
+
+  @doc """
+  True if EPC should be treated as a uniqueness conflict.
+
+  We ignore "reserved" EPCs created by the bridge during an in-flight label/ERP flow.
+  """
+  def conflict?(epc) when is_binary(epc) do
+    case Repo.get(EpcRecord, epc) do
+      nil ->
+        false
+
+      %EpcRecord{status: status} when is_binary(status) ->
+        String.downcase(String.trim(status)) != "reserved"
+
+      %EpcRecord{status: status} when is_atom(status) ->
+        Atom.to_string(status) != "reserved"
+
+      %EpcRecord{} ->
+        true
+    end
+  end
 end

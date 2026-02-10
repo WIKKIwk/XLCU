@@ -485,7 +485,29 @@ defmodule TitanBridge.Telegram.Bot do
       "[tg] print flow: chat_id=#{chat_id} product_id=#{product_id} weight=#{weight} manual=#{manual?}"
     )
 
+    # Give operator immediate feedback so the chat doesn't look "frozen" while we talk to Core/ERP.
+    processing_text =
+      "Ishlov berilyapti...\n" <>
+        "Mahsulot: #{product_id}\n" <>
+        "Vazn: #{weight} kg"
+
+    flow_mid = get_temp(chat_id, "flow_msg_id")
+
+    flow_mid =
+      if is_integer(flow_mid) do
+        edit_message(token, chat_id, flow_mid, processing_text)
+        flow_mid
+      else
+        mid = send_message(token, chat_id, processing_text)
+        if is_integer(mid), do: put_temp(chat_id, "flow_msg_id", mid)
+        mid
+      end
+
+    t0 = System.monotonic_time(:millisecond)
+
     with {:ok, epc} <- next_epc_checked() do
+      Logger.info("[tg] epc reserved epc=#{epc} dt=#{ms_since(t0)}ms")
+
       print_payload = %{
         "epc" => epc,
         "product_id" => product_id,
@@ -499,10 +521,11 @@ defmodule TitanBridge.Telegram.Bot do
 
       print_result = core_command(chat_id, "print_label", print_payload, 8000)
       print_ok = match?({:ok, _}, print_result)
+      Logger.info("[tg] print_label ok=#{print_ok} dt=#{ms_since(t0)}ms")
 
       print_error =
         case print_result do
-          {:error, reason} -> to_string(reason)
+          {:error, reason} -> reason_text(reason)
           _ -> nil
         end
 
@@ -514,10 +537,11 @@ defmodule TitanBridge.Telegram.Bot do
         end
 
       rfid_ok = match?({:ok, _}, rfid_result)
+      Logger.info("[tg] rfid_write ok=#{rfid_ok} dt=#{ms_since(t0)}ms")
 
       rfid_error =
         case rfid_result do
-          {:error, reason} -> to_string(reason)
+          {:error, reason} -> reason_text(reason)
           _ -> nil
         end
 
@@ -528,6 +552,8 @@ defmodule TitanBridge.Telegram.Bot do
 
       draft_result =
         if draft_attempted do
+          Logger.info("[tg] erp create_draft starting dt=#{ms_since(t0)}ms")
+
           case ErpClient.create_draft(%{
                  "product_id" => product_id,
                  "warehouse" => warehouse,
@@ -536,10 +562,12 @@ defmodule TitanBridge.Telegram.Bot do
                }) do
             {:ok, data} ->
               Logger.info("Stock Entry draft created: #{inspect(data["data"]["name"])}")
+              Logger.info("[tg] erp create_draft ok dt=#{ms_since(t0)}ms")
               :ok
 
             {:error, reason} ->
               Logger.warning("Stock Entry draft FAILED: #{inspect(reason)}")
+              Logger.info("[tg] erp create_draft error dt=#{ms_since(t0)}ms")
               {:error, reason}
           end
         else
@@ -584,13 +612,25 @@ defmodule TitanBridge.Telegram.Bot do
           "inline_keyboard" => [[%{"text" => "Qayta urinish", "callback_data" => "retry_batch"}]]
         }
 
-        send_message(
-          token,
-          chat_id,
-          "ERPNext'da draft yaratilmadi. Batch to'xtatildi.\n" <>
-            "Sabab: #{ErpClient.human_error(reason)}",
-          keyboard
-        )
+        # Keep existing flow message if we already created one for "processing..."
+        if is_integer(flow_mid) do
+          edit_message(
+            token,
+            chat_id,
+            flow_mid,
+            "ERPNext'da draft yaratilmadi. Batch to'xtatildi.\n" <>
+              "Sabab: #{ErpClient.human_error(reason)}",
+            keyboard
+          )
+        else
+          send_message(
+            token,
+            chat_id,
+            "ERPNext'da draft yaratilmadi. Batch to'xtatildi.\n" <>
+              "Sabab: #{ErpClient.human_error(reason)}",
+            keyboard
+          )
+        end
       else
         increment_batch_count(chat_id)
         maybe_continue_batch(token, chat_id, product_id, result_text)
@@ -601,7 +641,7 @@ defmodule TitanBridge.Telegram.Bot do
           "device_id" => device_id(),
           "action" => "error",
           "status" => "Error",
-          "message" => "#{reason}"
+          "message" => reason_text(reason)
         })
 
         maybe_continue_batch(token, chat_id, product_id, friendly_error(reason))
@@ -667,7 +707,7 @@ defmodule TitanBridge.Telegram.Bot do
   end
 
   defp friendly_error(reason) do
-    text = to_string(reason || "")
+    text = reason_text(reason || "")
 
     cond do
       String.contains?(text, "offline") ->
@@ -681,17 +721,51 @@ defmodule TitanBridge.Telegram.Bot do
     end
   end
 
+  defp reason_text(reason) do
+    cond do
+      is_binary(reason) ->
+        reason
+
+      is_atom(reason) ->
+        Atom.to_string(reason)
+
+      is_map(reason) and is_binary(reason["error"]) ->
+        reason["error"]
+
+      is_map(reason) and is_binary(reason[:error]) ->
+        reason[:error]
+
+      true ->
+        inspect(reason)
+    end
+  end
+
   defp device_id(chat_id \\ nil) do
     get_setting(:device_id) || (chat_id && "LCE-#{chat_id}") || "LCE-DEVICE"
   end
 
   defp core_command(chat_id, name, payload, timeout_ms) do
     target = core_device_id(chat_id)
-    CoreHub.command(target, name, payload, timeout_ms)
+    t0 = System.monotonic_time(:millisecond)
+
+    result =
+      try do
+        CoreHub.command(target, name, payload, timeout_ms)
+      catch
+        :exit, reason -> {:error, {:exit, reason}}
+      end
+
+    dt = System.monotonic_time(:millisecond) - t0
+    Logger.debug("[tg] core_command name=#{name} dt=#{dt}ms ok=#{match?({:ok, _}, result)}")
+    result
   end
 
   defp core_device_id(_chat_id) do
     get_setting(:device_id)
+  end
+
+  defp ms_since(t0_ms) when is_integer(t0_ms) do
+    System.monotonic_time(:millisecond) - t0_ms
   end
 
   defp upsert_session(chat_id, token, user) do
