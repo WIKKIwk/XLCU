@@ -144,6 +144,8 @@ make run LCE_DOCKER_PRIVILEGED=0
 make run-docker LCE_DOCKER_PRIVILEGED=0 LCE_DOCKER_DEVICES=/dev/ttyUSB0,/dev/usb/lp0
 ```
 
+Eslatma: agar Docker **rootless** rejimda bo'lsa, USB/serial qurilmalar container ichida ishlamasligi mumkin (hatto `--privileged` bilan ham).
+
 LAN qurilmalar (broadcast/discovery) yoki portlarga "cheklovsiz" ulanish kerak bo'lsa, Docker host-network rejimi yoqilgan (default).
 O'chirish:
 

@@ -40,9 +40,9 @@ LCE_DOCKER_NETWORK="lce-bridge-net"
 LCE_DOCKER_DNS_PRIMARY="${LCE_DOCKER_DNS_PRIMARY:-1.1.1.1}"
 LCE_DOCKER_DNS_SECONDARY="${LCE_DOCKER_DNS_SECONDARY:-8.8.8.8}"
 LCE_DOCKER_RESET="${LCE_DOCKER_RESET:-0}"
-LCE_DOCKER_PRIVILEGED="${LCE_DOCKER_PRIVILEGED:-0}" # 1 = --privileged (USB/serial access)
+LCE_DOCKER_PRIVILEGED="${LCE_DOCKER_PRIVILEGED:-1}" # 1 = --privileged (USB/serial access)
 LCE_DOCKER_DEVICES="${LCE_DOCKER_DEVICES:-}"        # optional: comma-separated --device entries (e.g. /dev/ttyUSB0,/dev/usb/lp0)
-LCE_DOCKER_HOST_NETWORK="${LCE_DOCKER_HOST_NETWORK:-0}" # 1 = --network host (LAN/broadcast + no port publishing needed)
+LCE_DOCKER_HOST_NETWORK="${LCE_DOCKER_HOST_NETWORK:-1}" # 1 = --network host (LAN/broadcast + no port publishing needed)
 LCE_FORCE_DOCKER="${LCE_FORCE_DOCKER:-0}"
 LCE_FORCE_LOCAL="${LCE_FORCE_LOCAL:-0}"
 LCE_PREFER_DOCKER="${LCE_PREFER_DOCKER:-1}"
@@ -125,6 +125,15 @@ python_bin() {
     return 0
   fi
   return 1
+}
+
+docker_rootless() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+  local rootless=""
+  rootless="$(docker info --format '{{.Rootless}}' 2>/dev/null || true)"
+  [[ "${rootless}" == "true" ]]
 }
 
 sha256_file() {
@@ -717,6 +726,12 @@ start_lce_docker() {
     echo "ERROR: mix not found and Docker is not available." >&2
     exit 1
   fi
+
+  if [[ "${LCE_DOCKER_PRIVILEGED}" == "1" ]] && docker_rootless; then
+    echo "WARNING: Docker rootless rejimi aniqlandi. USB/serial qurilmalar odatda container ichida ishlamaydi (hatto --privileged bilan ham)." >&2
+    echo "TIP: rootful Docker ishlating (system docker.service) yoki LCE_FORCE_LOCAL=1 bilan lokal rejimda ishga tushiring." >&2
+  fi
+
   ensure_postgres
   ensure_lce_dev_image
   # Eski konteynerni BUTUNLAY o'chiramiz
@@ -788,6 +803,14 @@ start_lce_docker() {
     --add-host=host.docker.internal:host-gateway
     --restart no
   )
+
+  # Make udev/USB device discovery work the same as host (best-effort).
+  if [[ -d /run/udev ]]; then
+    docker_args+=( -v /run/udev:/run/udev:ro )
+  fi
+  if [[ -d /dev/bus/usb ]]; then
+    docker_args+=( -v /dev/bus/usb:/dev/bus/usb )
+  fi
 
   if [[ "${use_host_network}" -eq 1 ]]; then
     docker_args+=( --network host )
@@ -1179,7 +1202,15 @@ start_core_agent() {
     core_net_args=( --network host )
   fi
 
-  docker run -d --name "${CORE_AGENT_CONTAINER}" "${core_net_args[@]}" \
+  local -a core_vol_args=()
+  if [[ -d /run/udev ]]; then
+    core_vol_args+=( -v /run/udev:/run/udev:ro )
+  fi
+  if [[ -d /dev/bus/usb ]]; then
+    core_vol_args+=( -v /dev/bus/usb:/dev/bus/usb )
+  fi
+
+  docker run -d --name "${CORE_AGENT_CONTAINER}" "${core_net_args[@]}" "${core_vol_args[@]}" \
     --add-host=host.docker.internal:host-gateway \
     $( [[ "${LCE_DOCKER_PRIVILEGED}" == "1" ]] && echo --privileged ) \
     -e CORE_WS_URL="${docker_ws_url}" \
