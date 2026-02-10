@@ -43,10 +43,20 @@ detect_child_dirs() {
 
 detect_child_dirs
 
-if [[ ! -d "${ZEBRA_DIR}" && ! -d "${RFID_DIR}" && "${LCE_AUTO_FETCH_CHILDREN}" == "1" ]]; then
+need_zebra=0
+need_rfid=0
+if [[ ! -d "${ZEBRA_DIR}" ]]; then
+  need_zebra=1
+fi
+if [[ ! -d "${RFID_DIR}" ]]; then
+  need_rfid=1
+fi
+
+if [[ "${LCE_AUTO_FETCH_CHILDREN}" == "1" && ( "${need_zebra}" == "1" || "${need_rfid}" == "1" ) ]]; then
   if command -v git >/dev/null 2>&1; then
     echo "INFO: Child repos topilmadi. Avtomatik yuklab olyapman (git clone)..." >&2
-    LCE_WORK_DIR="${WORK_DIR}" bash "${FETCH_CHILDREN_SCRIPT}"
+    LCE_WORK_DIR="${WORK_DIR}" LCE_FETCH_ZEBRA="${need_zebra}" LCE_FETCH_RFID="${need_rfid}" \
+      bash "${FETCH_CHILDREN_SCRIPT}"
     # Re-detect after fetch.
     detect_child_dirs
   fi
