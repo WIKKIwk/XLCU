@@ -12,6 +12,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="PROJECT_TITAN_HOST.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../Titan.Domain/Titan.Domain.csproj" />
     <ProjectReference Include="../Titan.Core/Titan.Core.csproj" />
     <ProjectReference Include="../Titan.Infrastructure/Titan.Infrastructure.csproj" />

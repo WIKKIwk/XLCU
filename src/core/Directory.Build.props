@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Some SDK distributions may not ship "prune package data" for framework refs yet.
+         This unblocks restore/build/test while keeping publish behavior unchanged. -->
+    <AllowMissingPrunePackageData>true</AllowMissingPrunePackageData>
+  </PropertyGroup>
+</Project>

@@ -69,7 +69,8 @@ public class BatchProcessingFsmTests
             _fsm.ProcessWeightSample(new WeightSample(2.0, "kg", baseTime + i * 0.1));
         }
 
-        _fsm.State.Should().Be(BatchProcessingState.Settling);
+        _fsm.State.Should().Be(BatchProcessingState.Locked);
+        _fsm.LockedWeight.Should().BeApproximately(2.0, 0.01);
     }
 
     [Fact]

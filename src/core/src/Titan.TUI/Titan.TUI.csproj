@@ -8,13 +8,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="PROJECT_TITAN_TUI.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../Titan.Domain/Titan.Domain.csproj" />
     <ProjectReference Include="../Titan.Core/Titan.Core.csproj" />
     <ProjectReference Include="../Titan.Infrastructure/Titan.Infrastructure.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Terminal.Gui" Version="2.0.0" />
+    <PackageReference Include="Terminal.Gui" Version="1.15.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0-preview.1.25080.5" />
   </ItemGroup>
 </Project>

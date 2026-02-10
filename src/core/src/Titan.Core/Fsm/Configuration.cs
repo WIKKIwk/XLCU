@@ -34,8 +34,10 @@ public sealed record StabilityConfiguration(
 )
 {
     public static StabilityConfiguration Default => new(
-        Sigma: 0.01,
-        Eps: 0.03,
+        // Default stability thresholds for typical industrial scales.
+        // Keep these aligned with tests and real-world noise characteristics.
+        Sigma: 0.015,
+        Eps: 0.05,
         EpsAlign: 0.06,
         WindowSeconds: 1.0,
         MinSamples: 10

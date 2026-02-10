@@ -38,7 +38,7 @@ public class TuiHostedService : IHostedService
         var mainWindow = new MainWindow(_batchService);
         Application.Top.Add(mainWindow);
 
-        Application.Top.Unloaded += _ =>
+        Application.Top.Unloaded += () =>
         {
             _lifetime.StopApplication();
         };

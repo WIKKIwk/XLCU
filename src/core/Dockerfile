@@ -1,6 +1,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
+COPY Directory.Build.props ./
 COPY src/Titan.Domain/Titan.Domain.csproj src/Titan.Domain/
 COPY src/Titan.Core/Titan.Core.csproj src/Titan.Core/
 COPY src/Titan.Infrastructure/Titan.Infrastructure.csproj src/Titan.Infrastructure/

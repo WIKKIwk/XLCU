@@ -8,6 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="PROJECT_TITAN_INFRASTRUCTURE.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../Titan.Domain/Titan.Domain.csproj" />
     <ProjectReference Include="../Titan.Core/Titan.Core.csproj" />
   </ItemGroup>

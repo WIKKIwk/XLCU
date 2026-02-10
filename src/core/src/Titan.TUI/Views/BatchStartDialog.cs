@@ -38,9 +38,10 @@ public class BatchStartDialog : Dialog
         AddButton(btnCancel);
     }
 
-    public new bool ShowDialog()
+    public bool ShowDialog()
     {
-        ShowModal();
+        // Run modally inside the existing Terminal.Gui event loop.
+        Application.Run(this);
         return !string.IsNullOrEmpty(BatchId);
     }
 }

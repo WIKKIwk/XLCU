@@ -15,6 +15,7 @@ using Titan.Infrastructure.Persistence.Repositories;
 using Titan.Infrastructure.Services;
 using Titan.TUI.Services;
 using Titan.Host.HealthChecks;
+using Titan.Host.Services;
 
 namespace Titan.Host;
 

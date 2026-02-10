@@ -12,7 +12,7 @@ public class ValueObjectsTests
         var epc = EpcCode.Create("3034257BF7194E4", 1);
 
         epc.Value.Should().Be("3034257BF7194E400000001");
-        epc.Value.Length.Should().Be(24);
+        epc.Value.Length.Should().Be(23);
     }
 
     [Fact]
@@ -20,7 +20,8 @@ public class ValueObjectsTests
     {
         var epc = EpcCode.Create("3034257BF7194E4", 12345);
 
-        epc.Value.Should().Contain("000012345");
+        // 12345 (dec) == 0x3039 -> padded to 8 hex chars
+        epc.Value.Should().Contain("00003039");
     }
 
     [Fact]

@@ -70,13 +70,13 @@ public sealed class MainWindow : Window
 
         _stabilityBar.Fraction = state switch
         {
-            BatchProcessingState.WaitEmpty => 0,
-            BatchProcessingState.Loading => 0.25,
-            BatchProcessingState.Settling => 0.5,
-            BatchProcessingState.Locked => 0.75,
-            BatchProcessingState.Printing => 1.0,
-            BatchProcessingState.PostGuard => 0.9,
-            _ => 0
+            BatchProcessingState.WaitEmpty => 0f,
+            BatchProcessingState.Loading => 0.25f,
+            BatchProcessingState.Settling => 0.5f,
+            BatchProcessingState.Locked => 0.75f,
+            BatchProcessingState.Printing => 1f,
+            BatchProcessingState.PostGuard => 0.9f,
+            _ => 0f
         };
 
         _statusLabel.ColorScheme = state switch
@@ -108,6 +108,6 @@ public sealed class MainWindow : Window
     private void OnSettings()
     {
         var settingsDialog = new SettingsDialog();
-        settingsDialog.ShowModal();
+        Application.Run(settingsDialog);
     }
 }

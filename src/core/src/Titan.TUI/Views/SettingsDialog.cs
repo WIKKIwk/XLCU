@@ -15,7 +15,7 @@ public class SettingsDialog : Dialog
         };
 
         // Hardware Tab
-        var hardwareTab = new Tab("Hardware", new FrameView("Hardware Settings")
+        var hardwareTab = new TabView.Tab("Hardware", new FrameView("Hardware Settings")
         {
             Width = Dim.Fill(),
             Height = Dim.Fill()
@@ -28,7 +28,7 @@ public class SettingsDialog : Dialog
         hardwareTab.View.Add(new TextField("/dev/usb/lp0") { X = 20, Y = 3, Width = 30 });
 
         // Network Tab
-        var networkTab = new Tab("Network", new FrameView("Network Settings")
+        var networkTab = new TabView.Tab("Network", new FrameView("Network Settings")
         {
             Width = Dim.Fill(),
             Height = Dim.Fill()
