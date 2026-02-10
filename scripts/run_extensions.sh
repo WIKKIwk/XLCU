@@ -199,9 +199,18 @@ read_secret_with_mask() {
   fi
 
   printf "%s" "$prompt"
-  local old_stty
-  old_stty="$(stty -g)"
-  stty -echo
+
+  # NOTE: Some environments have an `stty` implementation that prints a value for `stty -g`
+  # but fails when restoring it (e.g. "stty: invalid argument '4500:5:...'").
+  # For our purposes we only need to toggle echo, so avoid `stty -g` restore entirely.
+  if ! stty -echo 2>/dev/null; then
+    # Fallback: no masking, just read the line normally.
+    IFS= read -r secret
+    printf "\n"
+    REPLY="$secret"
+    return 0
+  fi
+
   while IFS= read -r -n1 char; do
     if [[ -z "$char" ]]; then
       break
@@ -219,7 +228,8 @@ read_secret_with_mask() {
     secret+="$char"
     printf "*"
   done
-  stty "$old_stty"
+  # Best-effort restore; don't fail the whole script if stty behaves differently.
+  stty echo 2>/dev/null || true
   printf "\n"
   REPLY="$secret"
 }
