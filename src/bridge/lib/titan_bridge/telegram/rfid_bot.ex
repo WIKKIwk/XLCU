@@ -669,19 +669,9 @@ defmodule TitanBridge.Telegram.RfidBot do
           "title" => title,
           "description" => desc,
           "input_message_content" => %{
-            "message_text" =>
-              "Draft: #{name}\n" <>
-                "Submit qilish uchun tugmani bosing."
-          },
-          "reply_markup" => %{
-            "inline_keyboard" => [
-              [
-                %{
-                  "text" => "Submit qilish",
-                  "callback_data" => "submit_draft:" <> name
-                }
-              ]
-            ]
+            # Old flow: selecting an inline result sends a hidden command-like message,
+            # then the bot deletes it and submits the draft.
+            "message_text" => "submit_draft:" <> name
           }
         }
       end)
