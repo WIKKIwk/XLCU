@@ -11,8 +11,8 @@ on:
 
 env:
   DOTNET_VERSION: "10.0.x"
-  ELIXIR_VERSION: "1.16.2"
-  OTP_VERSION: "26.2.5"
+  ELIXIR_VERSION: "1.16"
+  OTP_VERSION: "26"
 
 jobs:
   core-build:
