@@ -544,8 +544,14 @@ defmodule TitanBridge.Telegram.Bot do
           _ -> nil
         end
 
+      if not print_ok do
+        Logger.warning("[tg] print_label failed: #{print_error}")
+      end
+
+      simulated = allow_simulation?()
+
       rfid_result =
-        if print_ok or allow_simulation?() do
+        if print_ok or simulated do
           core_command(chat_id, "rfid_write", %{"epc" => epc}, 6000)
         else
           {:error, "printer not ready"}
@@ -559,8 +565,6 @@ defmodule TitanBridge.Telegram.Bot do
           {:error, reason} -> reason_text(reason)
           _ -> nil
         end
-
-      simulated = manual? or allow_simulation?()
 
       warehouse = get_chat_warehouse(chat_id) || get_setting(:warehouse)
       draft_attempted = print_ok or simulated

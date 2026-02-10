@@ -27,7 +27,11 @@ defmodule TitanBridge.EpcGenerator do
   end
 
   defp build_epc(prefix, value) do
-    hex = Integer.to_string(value, 16) |> String.upcase() |> String.pad_leading(8, "0")
+    # EPC Gen2 96-bit: prefix(60-bit=15 hex) + counter(36-bit=9 hex) => 24 hex (even length).
+    # Zebra encoder rejects odd-length hex strings (full bytes required).
+    max36 = 0xFFFFFFFFF
+    if value > max36, do: raise("EPC counter overflow (36-bit): #{value}")
+    hex = Integer.to_string(value, 16) |> String.upcase() |> String.pad_leading(9, "0")
     prefix <> hex
   end
 end
