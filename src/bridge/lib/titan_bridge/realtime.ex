@@ -44,6 +44,7 @@ defmodule TitanBridge.Realtime do
     Enum.each(state.subs, fn {pid, _ref} ->
       send(pid, {:realtime, payload})
     end)
+
     {:noreply, state}
   end
 
@@ -61,7 +62,9 @@ defmodule TitanBridge.Realtime do
 
   defp drop_sub(state, pid) do
     case Map.pop(state.subs, pid) do
-      {nil, subs} -> %{state | subs: subs}
+      {nil, subs} ->
+        %{state | subs: subs}
+
       {ref, subs} ->
         Process.demonitor(ref, [:flush])
         %{state | subs: subs}

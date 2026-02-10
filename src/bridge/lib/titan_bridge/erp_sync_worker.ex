@@ -87,6 +87,7 @@ defmodule TitanBridge.ErpSyncWorker do
 
   defp configured? do
     cfg = ErpClient.get_config()
+
     is_binary(cfg[:erp_url]) and String.trim(cfg[:erp_url]) != "" and
       is_binary(cfg[:erp_token]) and String.trim(cfg[:erp_token]) != ""
   end
@@ -122,20 +123,25 @@ defmodule TitanBridge.ErpSyncWorker do
   defp sync_stock_drafts(full_refresh) do
     since = if full_refresh, do: nil, else: SyncState.get("stock_drafts_modified")
     rows = fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)
+
     cond do
       rows == [] and full_refresh ->
         clear_stock_drafts()
+
       true ->
         update_stock_drafts(rows, full_refresh)
         maybe_put_sync_state("stock_drafts_modified", rows)
     end
+
     # EPC → draft mapping yangilash (lokal cache dan)
     build_epc_draft_mapping()
   end
 
   defp fetch_rows(fun, since) do
     case fun.(since) do
-      {:ok, rows} -> rows
+      {:ok, rows} ->
+        rows
+
       {:error, reason} ->
         Logger.warning("ERP sync failed: #{inspect(reason)}")
         []
@@ -143,6 +149,7 @@ defmodule TitanBridge.ErpSyncWorker do
   end
 
   defp maybe_put_sync_state(_key, []), do: :ok
+
   defp maybe_put_sync_state(key, rows) do
     case max_modified(rows) do
       nil -> :ok
@@ -151,52 +158,74 @@ defmodule TitanBridge.ErpSyncWorker do
   end
 
   defp update_items([]), do: :ok
+
   defp update_items(rows) do
     now = now()
     maps = Enum.map(rows, &item_map(&1, now))
+
     {_count, _} =
       Repo.insert_all(Item, maps,
         on_conflict: {:replace, [:item_name, :stock_uom, :disabled, :modified, :updated_at]},
         conflict_target: :name
       )
+
     Cache.put_items(maps)
     broadcast(:items, length(maps))
   end
 
   defp update_warehouses([]), do: :ok
+
   defp update_warehouses(rows) do
     now = now()
     maps = Enum.map(rows, &warehouse_map(&1, now))
+
     {_count, _} =
       Repo.insert_all(Warehouse, maps,
         on_conflict: {:replace, [:warehouse_name, :is_group, :disabled, :modified, :updated_at]},
         conflict_target: :name
       )
+
     Cache.put_warehouses(maps)
     broadcast(:warehouses, length(maps))
   end
 
   defp update_bins([]), do: :ok
+
   defp update_bins(rows) do
     now = now()
     maps = Enum.map(rows, &bin_map(&1, now))
+
     {_count, _} =
       Repo.insert_all(Bin, maps,
         on_conflict: {:replace, [:actual_qty, :modified, :updated_at]},
         conflict_target: [:item_code, :warehouse]
       )
+
     Cache.put_bins(maps)
     broadcast(:bins, length(maps))
   end
 
   defp update_stock_drafts([], _full_refresh), do: :ok
+
   defp update_stock_drafts(rows, full_refresh) do
     now = now()
     maps = Enum.map(rows, &stock_draft_map(&1, now))
 
     {_count, _} =
       Repo.insert_all(StockDraft, maps,
-        on_conflict: {:replace, [:docstatus, :purpose, :posting_date, :posting_time, :from_warehouse, :to_warehouse, :modified, :data, :updated_at]},
+        on_conflict:
+          {:replace,
+           [
+             :docstatus,
+             :purpose,
+             :posting_date,
+             :posting_time,
+             :from_warehouse,
+             :to_warehouse,
+             :modified,
+             :data,
+             :updated_at
+           ]},
         conflict_target: :name
       )
 
@@ -215,6 +244,7 @@ defmodule TitanBridge.ErpSyncWorker do
   # Har bir draft uchun to'liq doc (items + serial_no) olib kelinadi
   defp build_epc_draft_mapping do
     drafts = Cache.list_stock_drafts()
+
     mappings =
       drafts
       |> Enum.flat_map(fn draft ->
@@ -226,7 +256,7 @@ defmodule TitanBridge.ErpSyncWorker do
         remark_epc = extract_epc_from_remarks(doc["remarks"])
 
         candidates =
-          (if remark_epc, do: [remark_epc], else: []) ++
+          if(remark_epc, do: [remark_epc], else: []) ++
             Enum.flat_map(items, fn item ->
               barcode = String.trim(item["barcode"] || "")
               batch = String.trim(item["batch_no"] || "")
@@ -273,6 +303,7 @@ defmodule TitanBridge.ErpSyncWorker do
   defp fetch_full_doc(draft) do
     # Avval data fieldidan tekshiramiz — items bormi?
     data = draft.data || %{}
+
     if is_list(data["items"]) and data["items"] != [] do
       data
     else
@@ -281,11 +312,14 @@ defmodule TitanBridge.ErpSyncWorker do
         {:ok, doc} ->
           # data fieldini yangilaymiz (keyingi safar ERPNext ga bormaslik uchun)
           now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
           Repo.update_all(
             from(d in StockDraft, where: d.name == ^draft.name),
             set: [data: doc, updated_at: now]
           )
+
           doc
+
         {:error, _} ->
           data
       end
@@ -306,14 +340,17 @@ defmodule TitanBridge.ErpSyncWorker do
         with {:ok, row} <- resolve_doc(doc, "Item", name) do
           update_items([row])
         end
+
       "Warehouse" ->
         with {:ok, row} <- resolve_doc(doc, "Warehouse", name) do
           update_warehouses([row])
         end
+
       "Bin" ->
         with {:ok, row} <- resolve_doc(doc, "Bin", name) do
           update_bins([row])
         end
+
       "Stock Entry" ->
         with {:ok, row} <- resolve_doc(doc, "Stock Entry", name) do
           if to_int(row["docstatus"]) == 0 do
@@ -322,6 +359,7 @@ defmodule TitanBridge.ErpSyncWorker do
             delete_stock_draft(row["name"])
           end
         end
+
       _ ->
         :ok
     end
@@ -332,7 +370,9 @@ defmodule TitanBridge.ErpSyncWorker do
       {:ok, doc}
     else
       case ErpClient.get_doc(doctype, name) do
-        {:ok, row} -> {:ok, row}
+        {:ok, row} ->
+          {:ok, row}
+
         {:error, reason} ->
           Logger.warning("ERP webhook fetch failed: #{doctype} #{name} #{inspect(reason)}")
           {:error, reason}
@@ -341,8 +381,9 @@ defmodule TitanBridge.ErpSyncWorker do
   end
 
   defp delete_stock_draft(nil), do: :ok
+
   defp delete_stock_draft(name) do
-    Repo.delete_all(from d in StockDraft, where: d.name == ^name)
+    Repo.delete_all(from(d in StockDraft, where: d.name == ^name))
     Cache.delete_stock_draft(name)
     broadcast(:stock_drafts, 1)
   end
@@ -354,6 +395,7 @@ defmodule TitanBridge.ErpSyncWorker do
   end
 
   defp broadcast(_entity, count) when count <= 0, do: :ok
+
   defp broadcast(entity, _count) do
     payload = %{
       type: "cache_updated",
@@ -365,6 +407,7 @@ defmodule TitanBridge.ErpSyncWorker do
         stock_drafts: Cache.version(:stock_drafts)
       }
     }
+
     Realtime.broadcast(payload)
   end
 
@@ -437,21 +480,25 @@ defmodule TitanBridge.ErpSyncWorker do
   defp to_bool(_), do: false
 
   defp to_int(val) when is_integer(val), do: val
+
   defp to_int(val) when is_binary(val) do
     case Integer.parse(val) do
       {n, _} -> n
       _ -> 0
     end
   end
+
   defp to_int(_), do: 0
 
   defp to_float(val) when is_float(val), do: val
   defp to_float(val) when is_integer(val), do: val * 1.0
+
   defp to_float(val) when is_binary(val) do
     case Float.parse(val) do
       {n, _} -> n
       _ -> 0.0
     end
   end
+
   defp to_float(_), do: 0.0
 end

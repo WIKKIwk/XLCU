@@ -34,7 +34,16 @@ defmodule TitanBridge.Telegram.Bot do
   use GenServer
   require Logger
 
-  alias TitanBridge.{Cache, CoreHub, ErpClient, ErpSyncWorker, EpcGenerator, SettingsStore, SyncState}
+  alias TitanBridge.{
+    Cache,
+    CoreHub,
+    ErpClient,
+    ErpSyncWorker,
+    EpcGenerator,
+    SettingsStore,
+    SyncState
+  }
+
   alias TitanBridge.Telegram.{ChatState, SetupUtils, Transport}
 
   @state_table :tg_state
@@ -254,7 +263,9 @@ defmodule TitanBridge.Telegram.Bot do
         case parse_weight(text) do
           {:ok, weight} ->
             delete_message(token, chat_id, msg_id)
-            product_id = get_temp(chat_id, "pending_product") || get_temp(chat_id, "batch_product")
+
+            product_id =
+              get_temp(chat_id, "pending_product") || get_temp(chat_id, "batch_product")
 
             if product_id do
               process_print(token, chat_id, product_id, weight, true)
@@ -275,7 +286,8 @@ defmodule TitanBridge.Telegram.Bot do
         # manual weight while staying in batch mode.
         case {get_temp(chat_id, "batch_active"), parse_weight(text)} do
           {"true", {:ok, weight}} ->
-            product_id = get_temp(chat_id, "pending_product") || get_temp(chat_id, "batch_product")
+            product_id =
+              get_temp(chat_id, "pending_product") || get_temp(chat_id, "batch_product")
 
             if product_id do
               delete_message(token, chat_id, msg_id)
@@ -464,7 +476,10 @@ defmodule TitanBridge.Telegram.Bot do
         prompt_manual_weight(token, chat_id, product_id)
 
       {:error, reason} ->
-        Logger.warning("scale_read failed (#{inspect(reason)}); falling back to manual weight input")
+        Logger.warning(
+          "scale_read failed (#{inspect(reason)}); falling back to manual weight input"
+        )
+
         prompt_manual_weight(token, chat_id, product_id)
     end
   end
@@ -941,7 +956,7 @@ defmodule TitanBridge.Telegram.Bot do
         "warehouse" ->
           product_id = get_temp(chat_id, "pending_product")
 
-              {warehouses, qty_map} =
+          {warehouses, qty_map} =
             if is_binary(product_id) and String.trim(product_id) != "" do
               {qmap, qty_unknown?} =
                 case Cache.qty_map_for_item(product_id) do
@@ -992,6 +1007,7 @@ defmodule TitanBridge.Telegram.Bot do
           |> Enum.sort_by(fn row ->
             code = Map.get(row, :name) || Map.get(row, "name") || ""
             qty = Map.get(qty_map, code, 0) || 0
+
             title =
               to_string(
                 Map.get(row, :warehouse_name) || Map.get(row, "warehouse_name") ||

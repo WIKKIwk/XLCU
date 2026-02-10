@@ -3,7 +3,7 @@ defmodule TitanBridge.Repo.Migrations.AddRfidTelegramToken do
 
   def change do
     alter table(:lce_settings) do
-      add :rfid_telegram_token, :binary
+      add(:rfid_telegram_token, :binary)
     end
   end
 end

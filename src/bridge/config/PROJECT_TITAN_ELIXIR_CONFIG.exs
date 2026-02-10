@@ -9,7 +9,8 @@ config :titan_bridge,
   ecto_repos: [TitanBridge.Repo],
   generators: [timestamp_type: :utc_datetime_usec],
   # Security - generate strong key in production
-  session_encryption_key: System.get_env("SESSION_ENCRYPTION_KEY") || :crypto.strong_rand_bytes(32),
+  session_encryption_key:
+    System.get_env("SESSION_ENCRYPTION_KEY") || :crypto.strong_rand_bytes(32),
   api_token: System.get_env("TITAN_API_TOKEN") || "dev-token-change-in-production"
 
 # Database
@@ -108,7 +109,7 @@ if config_env() == :prod do
 
   # Telegram Bot Production Settings
   config :ex_gram, :token, System.get_env("TELEGRAM_BOT_TOKEN")
-  
+
   config :titan_bridge, TitanBridge.Telegram.Bot,
     webhook_url: System.get_env("TELEGRAM_WEBHOOK_URL"),
     webhook_secret: System.get_env("TELEGRAM_WEBHOOK_SECRET")
@@ -181,21 +182,21 @@ defmodule TitanBridge.Repo.Migrations.CreateDevices do
 
   def change do
     create table(:devices, primary_key: false) do
-      add :id, :binary_id, primary_key: true
-      add :device_id, :string, null: false
-      add :name, :string
-      add :location, :string
-      add :status, :string, default: "offline"
-      add :last_seen_at, :utc_datetime_usec
-      add :metadata, :map, default: %{}
-      add :capabilities, {:array, :string}, default: []
-      add :auth_token_hash, :string
+      add(:id, :binary_id, primary_key: true)
+      add(:device_id, :string, null: false)
+      add(:name, :string)
+      add(:location, :string)
+      add(:status, :string, default: "offline")
+      add(:last_seen_at, :utc_datetime_usec)
+      add(:metadata, :map, default: %{})
+      add(:capabilities, {:array, :string}, default: [])
+      add(:auth_token_hash, :string)
 
       timestamps(type: :utc_datetime_usec)
     end
 
-    create unique_index(:devices, [:device_id])
-    create index(:devices, [:status])
+    create(unique_index(:devices, [:device_id]))
+    create(index(:devices, [:status]))
   end
 end
 
@@ -207,23 +208,23 @@ defmodule TitanBridge.Repo.Migrations.CreateEvents do
 
   def change do
     create table(:events, primary_key: false) do
-      add :id, :binary_id, primary_key: true
-      add :event_type, :string, null: false
-      add :event_id, :string, null: false
-      add :payload, :map, null: false
-      add :processed_at, :utc_datetime_usec
-      add :synced_to_erp, :boolean, default: false
-      add :sync_attempts, :integer, default: 0
-      add :error_message, :text
-      add :device_id, references(:devices, type: :binary_id, on_delete: :nilify_all)
+      add(:id, :binary_id, primary_key: true)
+      add(:event_type, :string, null: false)
+      add(:event_id, :string, null: false)
+      add(:payload, :map, null: false)
+      add(:processed_at, :utc_datetime_usec)
+      add(:synced_to_erp, :boolean, default: false)
+      add(:sync_attempts, :integer, default: 0)
+      add(:error_message, :text)
+      add(:device_id, references(:devices, type: :binary_id, on_delete: :nilify_all))
 
       timestamps(type: :utc_datetime_usec)
     end
 
-    create unique_index(:events, [:event_id])
-    create index(:events, [:device_id])
-    create index(:events, [:synced_to_erp])
-    create index(:events, [:event_type])
+    create(unique_index(:events, [:event_id]))
+    create(index(:events, [:device_id]))
+    create(index(:events, [:synced_to_erp]))
+    create(index(:events, [:event_type]))
   end
 end
 
@@ -235,25 +236,25 @@ defmodule TitanBridge.Repo.Migrations.CreateSyncRecords do
 
   def change do
     create table(:sync_records, primary_key: false) do
-      add :id, :binary_id, primary_key: true
-      add :record_type, :string, null: false
-      add :erp_endpoint, :string, null: false
-      add :payload, :map, null: false
-      add :status, :string, default: "pending"
-      add :priority, :integer, default: 5
-      add :retry_count, :integer, default: 0
-      add :next_retry_at, :utc_datetime_usec
-      add :error_log, {:array, :map}, default: []
-      add :erp_response, :map
-      add :device_id, references(:devices, type: :binary_id, on_delete: :nilify_all)
+      add(:id, :binary_id, primary_key: true)
+      add(:record_type, :string, null: false)
+      add(:erp_endpoint, :string, null: false)
+      add(:payload, :map, null: false)
+      add(:status, :string, default: "pending")
+      add(:priority, :integer, default: 5)
+      add(:retry_count, :integer, default: 0)
+      add(:next_retry_at, :utc_datetime_usec)
+      add(:error_log, {:array, :map}, default: [])
+      add(:erp_response, :map)
+      add(:device_id, references(:devices, type: :binary_id, on_delete: :nilify_all))
 
       timestamps(type: :utc_datetime_usec)
     end
 
-    create index(:sync_records, [:status])
-    create index(:sync_records, [:device_id])
-    create index(:sync_records, [:next_retry_at])
-    create index(:sync_records, [:priority, :inserted_at])
+    create(index(:sync_records, [:status]))
+    create(index(:sync_records, [:device_id]))
+    create(index(:sync_records, [:next_retry_at]))
+    create(index(:sync_records, [:priority, :inserted_at]))
   end
 end
 
@@ -274,7 +275,7 @@ unless Repo.get_by(Device, device_id: "DEV-DEMO-001") do
     capabilities: ["zebra_print", "rfid_encode", "scale_read"]
   })
   |> Repo.insert!()
-  
+
   IO.puts("Created demo device: DEV-DEMO-001")
 end
 

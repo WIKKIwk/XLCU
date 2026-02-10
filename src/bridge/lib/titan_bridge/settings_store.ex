@@ -28,7 +28,9 @@ defmodule TitanBridge.SettingsStore do
 
   def masked() do
     case get() do
-      nil -> %{}
+      nil ->
+        %{}
+
       settings ->
         %{
           erp_url: settings.erp_url,

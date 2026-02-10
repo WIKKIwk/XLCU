@@ -74,6 +74,7 @@ defmodule TitanBridge.Web.CoreSocket do
       name: name,
       payload: payload || %{}
     }
+
     {:reply, {:text, Jason.encode!(msg)}, state}
   end
 
@@ -84,6 +85,7 @@ defmodule TitanBridge.Web.CoreSocket do
         protocol: 1,
         server_time: DateTime.utc_now()
       }
+
       {:reply, {:text, Jason.encode!(msg)}, state}
     else
       {:ok, state}
@@ -92,6 +94,7 @@ defmodule TitanBridge.Web.CoreSocket do
 
   def websocket_info(:ping, state) do
     schedule_ping()
+
     if state.authed do
       {:reply, {:text, Jason.encode!(%{type: "ping"})}, state}
     else
@@ -109,6 +112,7 @@ defmodule TitanBridge.Web.CoreSocket do
       _ ->
         :ok
     end
+
     :ok
   end
 
@@ -131,6 +135,7 @@ defmodule TitanBridge.Web.CoreSocket do
 
   defp authorized?(token) when is_binary(token) do
     secret = System.get_env("LCE_CORE_TOKEN") || ""
+
     if String.trim(secret) == "" do
       not production?()
     else

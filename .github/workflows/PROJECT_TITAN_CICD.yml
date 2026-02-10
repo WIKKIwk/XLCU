@@ -57,6 +57,7 @@ jobs:
     env:
       MIX_ENV: test
       DATABASE_URL: ecto://postgres:postgres@localhost:5432/titan_test
+      LCE_CHILDREN_MODE: off
 
     services:
       postgres:

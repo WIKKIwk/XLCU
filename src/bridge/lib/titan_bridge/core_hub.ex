@@ -47,7 +47,12 @@ defmodule TitanBridge.CoreHub do
   def command(device_id, name, payload \\ %{}, timeout_ms \\ 5000) do
     retries = if retryable?(name), do: max_retries(), else: 0
     call_timeout = timeout_ms * (retries + 1) + 1000
-    GenServer.call(__MODULE__, {:command, device_id, name, payload, timeout_ms, retries}, call_timeout)
+
+    GenServer.call(
+      __MODULE__,
+      {:command, device_id, name, payload, timeout_ms, retries},
+      call_timeout
+    )
   end
 
   def handle_event(device_id, event) when is_binary(device_id) and is_map(event) do
@@ -97,16 +102,19 @@ defmodule TitanBridge.CoreHub do
       request_id = gen_request_id()
       send(info.pid, {:core_command, request_id, name, payload})
       timer = Process.send_after(self(), {:request_timeout, request_id}, timeout_ms)
-      pending = Map.put(state.pending, request_id, %{
-        from: from,
-        timer: timer,
-        device_id: target_id,
-        name: name,
-        payload: payload,
-        timeout_ms: timeout_ms,
-        attempts: 0,
-        retries: retries
-      })
+
+      pending =
+        Map.put(state.pending, request_id, %{
+          from: from,
+          timer: timer,
+          device_id: target_id,
+          name: name,
+          payload: payload,
+          timeout_ms: timeout_ms,
+          attempts: 0,
+          retries: retries
+        })
+
       {:noreply, %{state | pending: pending}}
     end
   end
@@ -133,6 +141,7 @@ defmodule TitanBridge.CoreHub do
     case Map.pop(state.pending, request_id) do
       {nil, pending} ->
         {:noreply, %{state | pending: pending}}
+
       {%{from: from, timer: timer}, pending} ->
         Process.cancel_timer(timer)
         GenServer.reply(from, if(ok, do: {:ok, data}, else: {:error, data}))
@@ -143,7 +152,9 @@ defmodule TitanBridge.CoreHub do
   @impl true
   def handle_info({:request_timeout, request_id}, state) do
     case Map.pop(state.pending, request_id) do
-      {nil, pending} -> {:noreply, %{state | pending: pending}}
+      {nil, pending} ->
+        {:noreply, %{state | pending: pending}}
+
       {entry, pending} ->
         handle_timeout(request_id, entry, %{state | pending: pending})
     end
@@ -174,7 +185,9 @@ defmodule TitanBridge.CoreHub do
 
   defp drop_pid(state, pid) do
     case Map.pop(state.pids, pid) do
-      {nil, pids} -> %{state | pids: pids}
+      {nil, pids} ->
+        %{state | pids: pids}
+
       {device_id, pids} ->
         Logger.info("[core_hub] device disconnected #{device_id}")
         pending = cancel_pending_for_device(state.pending, device_id)
@@ -201,6 +214,7 @@ defmodule TitanBridge.CoreHub do
         nil ->
           GenServer.reply(entry.from, {:error, :offline})
           {:noreply, state}
+
         info ->
           send(info.pid, {:core_command, request_id, entry.name, entry.payload})
           timer = Process.send_after(self(), {:request_timeout, request_id}, entry.timeout_ms)
@@ -220,6 +234,7 @@ defmodule TitanBridge.CoreHub do
   defp retryable?(name) when is_binary(name) do
     name in ["scale_read", "health", "status"]
   end
+
   defp retryable?(_), do: false
 
   defp put_device(state, device_id, pid, ref, info) do
@@ -230,7 +245,9 @@ defmodule TitanBridge.CoreHub do
 
   defp update_device(state, device_id, fun) do
     case Map.get(state.devices, device_id) do
-      nil -> state
+      nil ->
+        state
+
       info ->
         devices = Map.put(state.devices, device_id, fun.(info))
         %{state | devices: devices}

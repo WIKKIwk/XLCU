@@ -78,43 +78,53 @@ defmodule TitanBridge.Cache do
 
   def put_items(items) when is_list(items) do
     ensure_tables()
+
     Enum.each(items, fn item ->
       :ets.insert(@items_table, {item.name, item})
     end)
+
     bump_version(:items, length(items))
   end
 
   def put_warehouses(warehouses) when is_list(warehouses) do
     ensure_tables()
+
     Enum.each(warehouses, fn wh ->
       :ets.insert(@warehouses_table, {wh.name, wh})
     end)
+
     bump_version(:warehouses, length(warehouses))
   end
 
   def put_bins(bins) when is_list(bins) do
     ensure_tables()
+
     Enum.each(bins, fn bin ->
       key = {bin.item_code, bin.warehouse}
       :ets.insert(@bins_table, {key, bin})
     end)
+
     bump_version(:bins, length(bins))
   end
 
   def put_stock_drafts(drafts) when is_list(drafts) do
     ensure_tables()
+
     Enum.each(drafts, fn draft ->
       :ets.insert(@drafts_table, {draft.name, draft})
     end)
+
     bump_version(:stock_drafts, length(drafts))
   end
 
   def replace_stock_drafts(drafts) when is_list(drafts) do
     ensure_tables()
     :ets.delete_all_objects(@drafts_table)
+
     Enum.each(drafts, fn draft ->
       :ets.insert(@drafts_table, {draft.name, draft})
     end)
+
     bump_version(:stock_drafts, 1)
   end
 
@@ -126,6 +136,7 @@ defmodule TitanBridge.Cache do
 
   def get_item(item_code) when is_binary(item_code) do
     ensure_tables()
+
     case :ets.lookup(@items_table, item_code) do
       [{^item_code, item}] -> item
       _ -> nil
@@ -134,6 +145,7 @@ defmodule TitanBridge.Cache do
 
   def list_items do
     ensure_tables()
+
     case :ets.tab2list(@items_table) do
       [] -> load_items()
       entries -> Enum.map(entries, fn {_k, v} -> v end)
@@ -142,6 +154,7 @@ defmodule TitanBridge.Cache do
 
   def list_warehouses do
     ensure_tables()
+
     case :ets.tab2list(@warehouses_table) do
       [] -> load_warehouses()
       entries -> Enum.map(entries, fn {_k, v} -> v end)
@@ -150,6 +163,7 @@ defmodule TitanBridge.Cache do
 
   def list_bins do
     ensure_tables()
+
     case :ets.tab2list(@bins_table) do
       [] -> load_bins()
       entries -> Enum.map(entries, fn {_k, v} -> v end)
@@ -158,6 +172,7 @@ defmodule TitanBridge.Cache do
 
   def list_stock_drafts do
     ensure_tables()
+
     case :ets.tab2list(@drafts_table) do
       [] -> load_stock_drafts()
       entries -> Enum.map(entries, fn {_k, v} -> v end)
@@ -172,6 +187,7 @@ defmodule TitanBridge.Cache do
   def put_epc_draft_mapping(mappings) when is_list(mappings) do
     ensure_tables()
     :ets.delete_all_objects(@epc_drafts_table)
+
     Enum.each(mappings, fn {epc, draft_info} ->
       :ets.insert(@epc_drafts_table, {epc, draft_info})
     end)
@@ -183,6 +199,7 @@ defmodule TitanBridge.Cache do
   """
   def find_draft_by_epc(epc) when is_binary(epc) do
     ensure_tables()
+
     case :ets.lookup(@epc_drafts_table, epc) do
       [{^epc, draft_info}] -> {:ok, draft_info}
       _ -> :not_found
@@ -197,6 +214,7 @@ defmodule TitanBridge.Cache do
   def search_items(query, limit \\ 50) do
     q = String.downcase(String.trim(query || ""))
     items = list_items()
+
     items
     |> Enum.filter(fn item ->
       if item.disabled do
@@ -212,6 +230,7 @@ defmodule TitanBridge.Cache do
 
   def search_warehouses(query, limit \\ 50) do
     q = String.downcase(String.trim(query || ""))
+
     list_warehouses()
     |> Enum.filter(fn wh ->
       if wh.disabled or wh.is_group do
@@ -227,6 +246,7 @@ defmodule TitanBridge.Cache do
 
   def warehouses_for_item(item_code) when is_binary(item_code) do
     bins = bins_for_item(item_code)
+
     if bins == [] do
       :no_cache
     else

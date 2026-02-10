@@ -5,8 +5,10 @@ import Config
 
 # --- Database ---
 # DATABASE_URL format: ecto://user:pass@host:port/dbname
-database_url = System.get_env("DATABASE_URL") ||
-  "ecto://titan:titan_secret@localhost/titan_bridge_dev"
+database_url =
+  System.get_env("DATABASE_URL") ||
+    "ecto://titan:titan_secret@localhost/titan_bridge_dev"
+
 sql_log =
   case String.downcase(System.get_env("LCE_SQL_LOG", "false")) do
     "1" -> :debug
@@ -27,8 +29,8 @@ config :titan_bridge, TitanBridge.Repo,
 # LCE_ZEBRA_DIR / LCE_RFID_DIR: override child directories
 
 root_dir =
-  System.get_env("LCE_ROOT_DIR")
-  || Path.expand("../../../../", __DIR__)
+  System.get_env("LCE_ROOT_DIR") ||
+    Path.expand("../../../../", __DIR__)
 
 bash = System.find_executable("bash") || "/bin/bash"
 zebra_dir = System.get_env("LCE_ZEBRA_DIR") || Path.join(root_dir, "zebra_v1")

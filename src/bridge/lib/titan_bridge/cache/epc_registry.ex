@@ -4,8 +4,8 @@ defmodule TitanBridge.Cache.EpcRegistry do
 
   @primary_key {:epc, :string, []}
   schema "lce_epc_registry" do
-    field :source, :string
-    field :status, :string
+    field(:source, :string)
+    field(:status, :string)
     timestamps()
   end
 

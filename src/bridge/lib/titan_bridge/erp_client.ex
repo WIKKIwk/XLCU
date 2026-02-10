@@ -144,13 +144,17 @@ defmodule TitanBridge.ErpClient do
   end
 
   def list_warehouses_modified(since \\ nil) do
-    list_resource("Warehouse", ["name", "warehouse_name", "is_group", "disabled", "modified"],
+    list_resource(
+      "Warehouse",
+      ["name", "warehouse_name", "is_group", "disabled", "modified"],
       build_modified_filters("Warehouse", since)
     )
   end
 
   def list_bins_modified(since \\ nil) do
-    list_resource("Bin", ["item_code", "warehouse", "actual_qty", "modified"],
+    list_resource(
+      "Bin",
+      ["item_code", "warehouse", "actual_qty", "modified"],
       build_modified_filters("Bin", since)
     )
   end
@@ -160,7 +164,20 @@ defmodule TitanBridge.ErpClient do
       build_modified_filters("Stock Entry", since) ++
         [["Stock Entry", "docstatus", "=", 0]]
 
-    list_resource("Stock Entry", ["name", "docstatus", "purpose", "posting_date", "posting_time", "from_warehouse", "to_warehouse", "modified"], filters)
+    list_resource(
+      "Stock Entry",
+      [
+        "name",
+        "docstatus",
+        "purpose",
+        "posting_date",
+        "posting_time",
+        "from_warehouse",
+        "to_warehouse",
+        "modified"
+      ],
+      filters
+    )
   end
 
   def list_products(warehouse \\ nil) do
@@ -181,13 +198,20 @@ defmodule TitanBridge.ErpClient do
          true <- valid?(base, token),
          base <- normalize_base(base) do
       fields = Jason.encode!(["name", "warehouse_name", "is_group", "disabled"])
-      filters = Jason.encode!([
-        ["Warehouse", "is_group", "=", 0],
-        ["Warehouse", "disabled", "=", 0]
-      ])
-      url = base <> "/api/resource/Warehouse?fields=" <> URI.encode(fields)
-        <> "&filters=" <> URI.encode(filters)
-        <> "&limit_page_length=200"
+
+      filters =
+        Jason.encode!([
+          ["Warehouse", "is_group", "=", 0],
+          ["Warehouse", "disabled", "=", 0]
+        ])
+
+      url =
+        base <>
+          "/api/resource/Warehouse?fields=" <>
+          URI.encode(fields) <>
+          "&filters=" <>
+          URI.encode(filters) <>
+          "&limit_page_length=200"
 
       case http_get(url, token) do
         {:ok, %{"data" => data}} -> {:ok, data}
@@ -328,19 +352,22 @@ defmodule TitanBridge.ErpClient do
 
                 %{
                   name: doc["name"],
-                  items: Enum.map(items, fn item ->
-                    %{
-                      item_code: item["item_code"],
-                      qty: item["qty"],
-                      serial_no: item["serial_no"],
-                      batch_no: item["batch_no"],
-                      barcode: item["barcode"],
-                      s_warehouse: item["s_warehouse"]
-                    }
-                  end),
+                  items:
+                    Enum.map(items, fn item ->
+                      %{
+                        item_code: item["item_code"],
+                        qty: item["qty"],
+                        serial_no: item["serial_no"],
+                        batch_no: item["batch_no"],
+                        barcode: item["barcode"],
+                        s_warehouse: item["s_warehouse"]
+                      }
+                    end),
                   epcs: Enum.uniq(epcs)
                 }
-              {:error, _} -> nil
+
+              {:error, _} ->
+                nil
             end
           end)
           |> Enum.reject(&is_nil/1)
@@ -348,7 +375,8 @@ defmodule TitanBridge.ErpClient do
 
         {:ok, results}
 
-      {:error, _} = err -> err
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -376,6 +404,7 @@ defmodule TitanBridge.ErpClient do
          true <- valid?(base, token),
          base <- normalize_base(base) do
       url = base <> "/api/resource/" <> URI.encode(doctype) <> "/" <> URI.encode(name)
+
       case http_get(url, token) do
         {:ok, %{"data" => data}} -> {:ok, data}
         {:ok, _} -> {:error, "Invalid ERP response"}
@@ -526,7 +555,9 @@ defmodule TitanBridge.ErpClient do
   def get_config do
     SettingsStore.get()
     |> case do
-      nil -> %{}
+      nil ->
+        %{}
+
       settings ->
         %{
           erp_url: settings.erp_url,
@@ -557,45 +588,66 @@ defmodule TitanBridge.ErpClient do
   end
 
   defp filter_by_warehouse(_base, _token, items, nil), do: {:ok, items}
+
   defp filter_by_warehouse(base, token, items, warehouse) when is_binary(warehouse) do
     warehouse = String.trim(warehouse)
+
     if warehouse == "" do
       {:ok, items}
     else
       bins = fetch_bins(base, token, warehouse)
+
       case bins do
         {:ok, item_codes} ->
           filtered = Enum.filter(items, fn item -> item["name"] in item_codes end)
           {:ok, filtered}
-        {:error, _} -> {:ok, items}
+
+        {:error, _} ->
+          {:ok, items}
       end
     end
   end
 
   defp fetch_bins(base, token, warehouse) do
-    filters = Jason.encode!([
-      ["Bin", "warehouse", "=", warehouse],
-      ["Bin", "actual_qty", ">", 0]
-    ])
+    filters =
+      Jason.encode!([
+        ["Bin", "warehouse", "=", warehouse],
+        ["Bin", "actual_qty", ">", 0]
+      ])
+
     fields = Jason.encode!(["item_code"])
-    url = base <> "/api/resource/Bin?fields=" <> URI.encode(fields) <> "&filters=" <> URI.encode(filters) <> "&limit_page_length=500"
+
+    url =
+      base <>
+        "/api/resource/Bin?fields=" <>
+        URI.encode(fields) <> "&filters=" <> URI.encode(filters) <> "&limit_page_length=500"
 
     case http_get(url, token) do
       {:ok, %{"data" => data}} ->
         codes = data |> Enum.map(& &1["item_code"]) |> Enum.uniq()
         {:ok, codes}
-      {:ok, _} -> {:error, "Invalid ERP response"}
-      {:error, _} = err -> err
+
+      {:ok, _} ->
+        {:error, "Invalid ERP response"}
+
+      {:error, _} = err ->
+        err
     end
   end
 
   defp fetch_bins_for_item(base, token, item_code) do
-    filters = Jason.encode!([
-      ["Bin", "item_code", "=", item_code],
-      ["Bin", "actual_qty", ">", 0]
-    ])
+    filters =
+      Jason.encode!([
+        ["Bin", "item_code", "=", item_code],
+        ["Bin", "actual_qty", ">", 0]
+      ])
+
     fields = Jason.encode!(["warehouse"])
-    url = base <> "/api/resource/Bin?fields=" <> URI.encode(fields) <> "&filters=" <> URI.encode(filters) <> "&limit_page_length=500"
+
+    url =
+      base <>
+        "/api/resource/Bin?fields=" <>
+        URI.encode(fields) <> "&filters=" <> URI.encode(filters) <> "&limit_page_length=500"
 
     case http_get(url, token) do
       {:ok, %{"data" => data}} -> {:ok, data}
@@ -607,7 +659,11 @@ defmodule TitanBridge.ErpClient do
   defp fetch_warehouses_by_names(base, token, names) when is_list(names) do
     fields = Jason.encode!(["name", "warehouse_name"])
     filters = Jason.encode!([["Warehouse", "name", "in", names]])
-    url = base <> "/api/resource/Warehouse?fields=" <> URI.encode(fields) <> "&filters=" <> URI.encode(filters) <> "&limit_page_length=500"
+
+    url =
+      base <>
+        "/api/resource/Warehouse?fields=" <>
+        URI.encode(fields) <> "&filters=" <> URI.encode(filters) <> "&limit_page_length=500"
 
     case http_get(url, token) do
       {:ok, %{"data" => data}} -> {:ok, data}
@@ -644,10 +700,16 @@ defmodule TitanBridge.ErpClient do
          base <- normalize_base(base) do
       filters = Jason.encode!([[doctype, field, "=", value]])
       fields = Jason.encode!(["name"])
-      url = base <> "/api/resource/" <> URI.encode(doctype)
-        <> "?fields=" <> URI.encode(fields)
-        <> "&filters=" <> URI.encode(filters)
-        <> "&limit_page_length=1"
+
+      url =
+        base <>
+          "/api/resource/" <>
+          URI.encode(doctype) <>
+          "?fields=" <>
+          URI.encode(fields) <>
+          "&filters=" <>
+          URI.encode(filters) <>
+          "&limit_page_length=1"
 
       case http_get(url, token) do
         {:ok, %{"data" => [row | _]}} -> {:ok, row["name"]}
@@ -719,36 +781,49 @@ defmodule TitanBridge.ErpClient do
 
   defp http_get(url, token) do
     headers = auth_headers(token)
+
     case Finch.build(:get, url, headers) |> Finch.request(TitanBridgeFinch, finch_opts()) do
       {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
         {:ok, Jason.decode!(body)}
+
       {:ok, %Finch.Response{status: status, body: body}} ->
         {:error, "ERP GET failed: #{status} #{body}"}
-      {:error, err} -> {:error, inspect(err)}
+
+      {:error, err} ->
+        {:error, inspect(err)}
     end
   end
 
   defp http_post(url, token, payload) do
     headers = auth_headers(token) ++ [{"content-type", "application/json"}]
     body = Jason.encode!(payload)
-    case Finch.build(:post, url, headers, body) |> Finch.request(TitanBridgeFinch, finch_opts()) do
+
+    case Finch.build(:post, url, headers, body)
+         |> Finch.request(TitanBridgeFinch, finch_opts()) do
       {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
         {:ok, Jason.decode!(body)}
+
       {:ok, %Finch.Response{status: status, body: body}} ->
         {:error, "ERP POST failed: #{status} #{body}"}
-      {:error, err} -> {:error, inspect(err)}
+
+      {:error, err} ->
+        {:error, inspect(err)}
     end
   end
 
   defp http_put(url, token, payload) do
     headers = auth_headers(token) ++ [{"content-type", "application/json"}]
     body = Jason.encode!(payload)
+
     case Finch.build(:put, url, headers, body) |> Finch.request(TitanBridgeFinch, finch_opts()) do
       {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
         {:ok, Jason.decode!(body)}
+
       {:ok, %Finch.Response{status: status, body: body}} ->
         {:error, "ERP PUT failed: #{status} #{body}"}
-      {:error, err} -> {:error, inspect(err)}
+
+      {:error, err} ->
+        {:error, inspect(err)}
     end
   end
 
@@ -766,6 +841,7 @@ defmodule TitanBridge.ErpClient do
 
   defp auth_headers(token) do
     t = String.trim(token || "")
+
     if t == "" do
       []
     else
@@ -777,15 +853,21 @@ defmodule TitanBridge.ErpClient do
   defp normalize_base(base) when is_binary(base) do
     base = String.trim_trailing(String.trim(base), "/")
     base = ensure_scheme(base)
+
     case System.get_env("LCE_HOST_ALIAS") do
-      nil -> base
-      "" -> base
+      nil ->
+        base
+
+      "" ->
+        base
+
       alias_host ->
         case URI.parse(base) do
           %URI{host: host} = uri when host in ["localhost", "127.0.0.1"] ->
             uri
             |> Map.put(:host, alias_host)
             |> URI.to_string()
+
           _ ->
             base
         end
@@ -814,26 +896,40 @@ defmodule TitanBridge.ErpClient do
     limit = 200
     fields_json = Jason.encode!(fields)
     filters_json = Jason.encode!(filters)
-    url = base <> "/api/resource/" <> URI.encode(doctype)
-      <> "?fields=" <> URI.encode(fields_json)
-      <> "&filters=" <> URI.encode(filters_json)
-      <> "&limit_page_length=" <> Integer.to_string(limit)
-      <> "&limit_start=" <> Integer.to_string(start)
+
+    url =
+      base <>
+        "/api/resource/" <>
+        URI.encode(doctype) <>
+        "?fields=" <>
+        URI.encode(fields_json) <>
+        "&filters=" <>
+        URI.encode(filters_json) <>
+        "&limit_page_length=" <>
+        Integer.to_string(limit) <>
+        "&limit_start=" <> Integer.to_string(start)
 
     case http_get(url, token) do
       {:ok, %{"data" => data}} when is_list(data) ->
         new_acc = acc ++ data
+
         if length(data) == limit do
           fetch_all(base, token, doctype, fields, filters, start + limit, new_acc)
         else
           {:ok, new_acc}
         end
-      {:ok, _} -> {:error, "Invalid ERP response"}
-      {:error, _} = err -> err
+
+      {:ok, _} ->
+        {:error, "Invalid ERP response"}
+
+      {:error, _} = err ->
+        err
     end
   end
 
-  defp build_modified_filters(doctype, nil), do: [[doctype, "modified", ">", "1970-01-01 00:00:00"]]
+  defp build_modified_filters(doctype, nil),
+    do: [[doctype, "modified", ">", "1970-01-01 00:00:00"]]
+
   defp build_modified_filters(doctype, since) when is_binary(since) do
     [[doctype, "modified", ">=", since]]
   end

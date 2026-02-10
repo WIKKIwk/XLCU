@@ -4,7 +4,7 @@ defmodule TitanBridge.Cache.SyncState do
 
   @primary_key {:key, :string, []}
   schema "lce_sync_state" do
-    field :value, :string
+    field(:value, :string)
     timestamps()
   end
 

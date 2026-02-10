@@ -39,17 +39,19 @@ defmodule TitanBridge.Children do
 
   @impl true
   def handle_call(:status, _from, state) do
-    list = state.children
-    |> Enum.map(fn {name, child} ->
-      info = Port.info(child.port) || []
-      %{
-        name: name,
-        cmd: child.cmd,
-        cwd: child.cwd,
-        os_pid: info[:os_pid],
-        running: is_pid(info[:connected])
-      }
-    end)
+    list =
+      state.children
+      |> Enum.map(fn {name, child} ->
+        info = Port.info(child.port) || []
+
+        %{
+          name: name,
+          cmd: child.cmd,
+          cwd: child.cwd,
+          os_pid: info[:os_pid],
+          running: is_pid(info[:connected])
+        }
+      end)
 
     {:reply, list, state}
   end
@@ -59,9 +61,11 @@ defmodule TitanBridge.Children do
     case find_child(state, port) do
       {name, _child} ->
         Logger.info("[child #{name}] #{String.trim_trailing(data)}")
+
       nil ->
         :ok
     end
+
     {:noreply, state}
   end
 
@@ -71,10 +75,13 @@ defmodule TitanBridge.Children do
       {name, child} ->
         Logger.warning("[child #{name}] exited with status #{status}")
         next_state = remove_child(state, name)
+
         if child.restart do
           Process.send_after(self(), {:restart_child, child}, child.restart_delay_ms)
         end
+
         {:noreply, next_state}
+
       nil ->
         {:noreply, state}
     end
@@ -85,6 +92,7 @@ defmodule TitanBridge.Children do
     case start_child(child) do
       {:ok, _port, entry} ->
         {:noreply, put_child(state, entry.name, entry)}
+
       {:error, reason} ->
         Logger.error("[child #{child.name}] restart failed: #{inspect(reason)}")
         {:noreply, state}
@@ -102,7 +110,9 @@ defmodule TitanBridge.Children do
 
   defp filter_children(children) do
     case child_targets() do
-      :all -> children
+      :all ->
+        children
+
       targets ->
         Enum.filter(children, fn child ->
           name = child.name |> to_string() |> String.downcase()
@@ -113,9 +123,15 @@ defmodule TitanBridge.Children do
 
   defp child_targets do
     case System.get_env("LCE_CHILDREN_TARGET") do
-      nil -> :all
-      "" -> :all
-      "all" -> :all
+      nil ->
+        :all
+
+      "" ->
+        :all
+
+      "all" ->
+        :all
+
       raw ->
         targets =
           raw
@@ -128,10 +144,13 @@ defmodule TitanBridge.Children do
   end
 
   defp ensure_local_urls do
-    zebra_url = System.get_env("LCE_ZEBRA_URL")
-      || local_url("LCE_ZEBRA_PORT", "18000")
-    rfid_url = System.get_env("LCE_RFID_URL")
-      || local_url("LCE_RFID_PORT", "8787")
+    zebra_url =
+      System.get_env("LCE_ZEBRA_URL") ||
+        local_url("LCE_ZEBRA_PORT", "18000")
+
+    rfid_url =
+      System.get_env("LCE_RFID_URL") ||
+        local_url("LCE_RFID_PORT", "8787")
 
     current = SettingsStore.get()
     updates = %{}
@@ -174,6 +193,7 @@ defmodule TitanBridge.Children do
       case start_child(child) do
         {:ok, _port, entry} ->
           put_child(acc, entry.name, entry)
+
         {:error, reason} ->
           Logger.error("[child #{child.name}] failed to start: #{inspect(reason)}")
           acc
@@ -184,17 +204,22 @@ defmodule TitanBridge.Children do
   defp start_child(%{cmd: cmd} = child) when is_binary(cmd) do
     args = child.args || []
     cwd = child.cwd
+
     cond do
       cwd && !File.dir?(cwd) ->
         {:error, {:invalid_cwd, cwd}}
-      match?([script | _], args) && cwd && is_binary(hd(args)) && !File.exists?(Path.join(cwd, hd(args))) ->
+
+      match?([script | _], args) && cwd && is_binary(hd(args)) &&
+          !File.exists?(Path.join(cwd, hd(args))) ->
         {:error, {:missing_script, Path.join(cwd, hd(args))}}
+
       true ->
         :ok
     end
     |> case do
       {:error, _} = err ->
         err
+
       _ ->
         args = Enum.map(args, &to_charlist/1)
         cmd = to_charlist(cmd)
@@ -204,26 +229,32 @@ defmodule TitanBridge.Children do
           :exit_status,
           {:args, args}
         ]
+
         opts = if child.cwd, do: opts ++ [{:cd, to_charlist(child.cwd)}], else: opts
+
         opts =
           if child.env do
-            env = Enum.map(child.env, fn {key, value} ->
-              {to_charlist(key), to_charlist(value)}
-            end)
+            env =
+              Enum.map(child.env, fn {key, value} ->
+                {to_charlist(key), to_charlist(value)}
+              end)
+
             opts ++ [{:env, env}]
           else
             opts
           end
 
         port = Port.open({:spawn_executable, cmd}, opts)
-        {:ok, port, %{
-          name: child.name,
-          port: port,
-          cmd: cmd,
-          cwd: child.cwd,
-          restart: Map.get(child, :restart, true),
-          restart_delay_ms: Map.get(child, :restart_delay_ms, 1500)
-        }}
+
+        {:ok, port,
+         %{
+           name: child.name,
+           port: port,
+           cmd: cmd,
+           cwd: child.cwd,
+           restart: Map.get(child, :restart, true),
+           restart_delay_ms: Map.get(child, :restart_delay_ms, 1500)
+         }}
     end
   end
 

@@ -27,10 +27,10 @@ defmodule TitanBridge.EpcRegistry do
       {:ok, :exists}
     else
       case Repo.insert(
-        %EpcRecord{epc: epc, source: source, status: "scanned"},
-        on_conflict: :nothing,
-        conflict_target: :epc
-      ) do
+             %EpcRecord{epc: epc, source: source, status: "scanned"},
+             on_conflict: :nothing,
+             conflict_target: :epc
+           ) do
         {:ok, _} -> {:ok, :new}
         _ -> {:ok, :exists}
       end

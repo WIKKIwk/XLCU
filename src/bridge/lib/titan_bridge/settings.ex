@@ -12,14 +12,14 @@ defmodule TitanBridge.Settings do
 
   @primary_key {:id, :integer, []}
   schema "lce_settings" do
-    field :erp_url, :string
-    field :erp_token, TitanBridge.Encrypted.Binary
-    field :telegram_token, TitanBridge.Encrypted.Binary
-    field :zebra_url, :string
-    field :rfid_url, :string
-    field :rfid_telegram_token, TitanBridge.Encrypted.Binary
-    field :device_id, :string
-    field :warehouse, :string
+    field(:erp_url, :string)
+    field(:erp_token, TitanBridge.Encrypted.Binary)
+    field(:telegram_token, TitanBridge.Encrypted.Binary)
+    field(:zebra_url, :string)
+    field(:rfid_url, :string)
+    field(:rfid_telegram_token, TitanBridge.Encrypted.Binary)
+    field(:device_id, :string)
+    field(:warehouse, :string)
     timestamps()
   end
 
@@ -33,7 +33,10 @@ defmodule TitanBridge.Settings do
 
   def mask(value) when is_binary(value) do
     len = String.length(value)
-    if len <= 6, do: String.duplicate("*", len), else: String.slice(value, 0, 3) <> "***" <> String.slice(value, -3, 3)
+
+    if len <= 6,
+      do: String.duplicate("*", len),
+      else: String.slice(value, 0, 3) <> "***" <> String.slice(value, -3, 3)
   end
 
   def mask(_), do: nil

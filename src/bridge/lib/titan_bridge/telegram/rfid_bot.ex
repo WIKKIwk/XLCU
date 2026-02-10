@@ -86,6 +86,7 @@ defmodule TitanBridge.Telegram.RfidBot do
     # "/command@botname" → "/command"
     cmd = text |> String.trim() |> String.split("@") |> hd() |> String.downcase()
     user = msg["from"] || %{}
+
     user_id =
       case user do
         %{"id" => id} when is_integer(id) -> id
@@ -152,6 +153,7 @@ defmodule TitanBridge.Telegram.RfidBot do
     chat_id = cb["message"]["chat"]["id"]
     cb_id = cb["id"]
     data = cb["data"] || ""
+
     user_id =
       case cb do
         %{"from" => %{"id" => id}} when is_integer(id) -> id
@@ -472,6 +474,7 @@ defmodule TitanBridge.Telegram.RfidBot do
       |> Enum.with_index()
       |> Enum.map(fn {d, idx} ->
         name = to_string(d.name || "")
+
         display_epc =
           (d.items || [])
           |> Enum.map(&Map.get(&1, :barcode))
@@ -961,7 +964,7 @@ defmodule TitanBridge.Telegram.RfidBot do
         token,
         chat_id,
         "ERPNext bilan muammo yuz berdi. Skaner to'xtatildi.\n" <>
-          (if reason_text, do: "Sabab: #{reason_text}\n", else: "") <>
+          if(reason_text, do: "Sabab: #{reason_text}\n", else: "") <>
           "Tekshirib qayta urinib ko'ring.",
         keyboard
       )

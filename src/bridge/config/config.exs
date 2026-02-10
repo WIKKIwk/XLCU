@@ -45,5 +45,7 @@ config :titan_bridge, TitanBridge.Web.CoreSocket,
   ping_interval_ms: String.to_integer(System.get_env("LCE_CORE_PING_MS", "15000"))
 
 # --- Logging ---
-config :logger, :console,
-  format: "$time $metadata[$level] $message\n"
+config :logger, :console, format: "$time $metadata[$level] $message\n"
+
+# Load environment-specific config (dev/test/prod).
+import_config "#{config_env()}.exs"

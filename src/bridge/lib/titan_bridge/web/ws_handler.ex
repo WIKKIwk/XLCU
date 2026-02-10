@@ -16,6 +16,7 @@ defmodule TitanBridge.Web.WsHandler do
 
   def websocket_init(state) do
     Realtime.subscribe(self())
+
     payload = %{
       type: "hello",
       versions: %{
@@ -25,6 +26,7 @@ defmodule TitanBridge.Web.WsHandler do
         stock_drafts: Cache.version(:stock_drafts)
       }
     }
+
     {:reply, {:text, Jason.encode!(payload)}, state}
   end
 

@@ -4,7 +4,7 @@ defmodule TitanBridge.EpcSequence do
 
   @primary_key {:prefix, :string, []}
   schema "lce_epc_sequences" do
-    field :last_value, :integer, default: 0
+    field(:last_value, :integer, default: 0)
     timestamps()
   end
 
