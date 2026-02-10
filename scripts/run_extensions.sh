@@ -287,7 +287,7 @@ auto_detect_scale_port() {
     local target=""
     target="$(resolve_path "${p}")"
     if [[ "${target}" == /dev/ttyUSB* || "${target}" == /dev/ttyACM* ]]; then
-      candidates+=( "${p}" )
+      candidates+=( "${target}" )
     fi
   done < <(compgen -G "/dev/serial/by-id/*" 2>/dev/null || true)
 
