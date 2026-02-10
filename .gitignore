@@ -3,6 +3,7 @@ src/bridge/_build/
 src/bridge/deps/
 src/bridge/*.exs
 !src/bridge/mix.exs
+!src/bridge/.formatter.exs
 
 # C# Core
 src/core/src/**/bin/
