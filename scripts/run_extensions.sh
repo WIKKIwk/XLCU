@@ -42,6 +42,7 @@ LCE_DOCKER_DNS_SECONDARY="${LCE_DOCKER_DNS_SECONDARY:-8.8.8.8}"
 LCE_DOCKER_RESET="${LCE_DOCKER_RESET:-0}"
 LCE_DOCKER_PRIVILEGED="${LCE_DOCKER_PRIVILEGED:-0}" # 1 = --privileged (USB/serial access)
 LCE_DOCKER_DEVICES="${LCE_DOCKER_DEVICES:-}"        # optional: comma-separated --device entries (e.g. /dev/ttyUSB0,/dev/usb/lp0)
+LCE_DOCKER_HOST_NETWORK="${LCE_DOCKER_HOST_NETWORK:-0}" # 1 = --network host (LAN/broadcast + no port publishing needed)
 LCE_FORCE_DOCKER="${LCE_FORCE_DOCKER:-0}"
 LCE_FORCE_LOCAL="${LCE_FORCE_LOCAL:-0}"
 LCE_PREFER_DOCKER="${LCE_PREFER_DOCKER:-1}"
@@ -755,15 +756,25 @@ start_lce_docker() {
   mkdir -p "${LCE_MIX_CACHE_DIR}" "${LCE_BUILD_CACHE_DIR}" "${LCE_DEPS_CACHE_DIR}"
   free_port "${ZEBRA_WEB_PORT}"
   free_port "${RFID_WEB_PORT}"
+
+  local db_host="${LCE_POSTGRES_CONTAINER}"
+  local use_host_network=0
+  local http_port_in_container="4000"
+  if [[ "${LCE_DOCKER_HOST_NETWORK}" == "1" ]]; then
+    use_host_network=1
+    http_port_in_container="${LCE_PORT}"
+    # With host networking, container-to-container DNS doesn't work. Use the host-published
+    # Postgres port instead (ensure_postgres publishes 5432:5432).
+    db_host="127.0.0.1"
+  fi
+
   local -a docker_args=(
-    run -d --name "${LCE_DOCKER_CONTAINER}" --network "${LCE_DOCKER_NETWORK}"
+    run -d --name "${LCE_DOCKER_CONTAINER}"
     --dns "${LCE_DOCKER_DNS_PRIMARY}"
     --dns "${LCE_DOCKER_DNS_SECONDARY}"
-    -p "${LCE_PORT}:4000"
-    -p "${ZEBRA_WEB_PORT}:${ZEBRA_WEB_PORT}"
-    -p "${RFID_WEB_PORT}:${RFID_WEB_PORT}"
-    -e DATABASE_URL="ecto://titan:titan_secret@${LCE_POSTGRES_CONTAINER}:5432/titan_bridge_dev"
+    -e DATABASE_URL="ecto://titan:titan_secret@${db_host}:5432/titan_bridge_dev"
     -e MIX_ENV=dev
+    -e LCE_HTTP_PORT="${http_port_in_container}"
     -e CLOAK_KEY="${CLOAK_KEY}"
     -e LCE_HOST_ALIAS="host.docker.internal"
     -e LCE_SIMULATE_DEVICES="${LCE_SIMULATE_DEVICES}"
@@ -777,6 +788,15 @@ start_lce_docker() {
     --add-host=host.docker.internal:host-gateway
     --restart no
   )
+
+  if [[ "${use_host_network}" -eq 1 ]]; then
+    docker_args+=( --network host )
+  else
+    docker_args+=( --network "${LCE_DOCKER_NETWORK}" )
+    docker_args+=( -p "${LCE_PORT}:4000" )
+    docker_args+=( -p "${ZEBRA_WEB_PORT}:${ZEBRA_WEB_PORT}" )
+    docker_args+=( -p "${RFID_WEB_PORT}:${RFID_WEB_PORT}" )
+  fi
 
   # Hardware mode: give the container full device access (USB/serial/printer).
   # This is intentionally opt-in because it's a big security escalation.
@@ -1106,10 +1126,19 @@ start_core_agent() {
   local docker_pg_url="postgres://${CORE_PG_USER}:${CORE_PG_PASSWORD}@${CORE_PG_CONTAINER}:5432/${CORE_PG_DB}"
 
   if [[ "${LCE_DOCKER}" -eq 1 ]]; then
-    docker_ws_url="ws://${LCE_DOCKER_CONTAINER}:4000/ws/core"
-    docker_api_base="http://${LCE_DOCKER_CONTAINER}:4000"
-    docker_zebra_url="http://${LCE_DOCKER_CONTAINER}:${ZEBRA_WEB_PORT}"
-    docker_rfid_url="http://${LCE_DOCKER_CONTAINER}:${RFID_WEB_PORT}"
+    if [[ "${LCE_DOCKER_HOST_NETWORK}" == "1" ]]; then
+      # Bridge container is in host-network mode, so connect via host loopback.
+      docker_ws_url="ws://127.0.0.1:${LCE_PORT}/ws/core"
+      docker_api_base="http://127.0.0.1:${LCE_PORT}"
+      docker_zebra_url="http://127.0.0.1:${ZEBRA_WEB_PORT}"
+      docker_rfid_url="http://127.0.0.1:${RFID_WEB_PORT}"
+      docker_pg_url="postgres://${CORE_PG_USER}:${CORE_PG_PASSWORD}@127.0.0.1:${CORE_PG_PORT}/${CORE_PG_DB}"
+    else
+      docker_ws_url="ws://${LCE_DOCKER_CONTAINER}:4000/ws/core"
+      docker_api_base="http://${LCE_DOCKER_CONTAINER}:4000"
+      docker_zebra_url="http://${LCE_DOCKER_CONTAINER}:${ZEBRA_WEB_PORT}"
+      docker_rfid_url="http://${LCE_DOCKER_CONTAINER}:${RFID_WEB_PORT}"
+    fi
   else
     docker_ws_url="ws://host.docker.internal:${LCE_PORT}/ws/core"
     docker_api_base="http://host.docker.internal:${LCE_PORT}"
@@ -1145,7 +1174,12 @@ start_core_agent() {
 
   docker rm -f "${CORE_AGENT_CONTAINER}" >/dev/null 2>&1 || true
 
-  docker run -d --name "${CORE_AGENT_CONTAINER}" --network "${LCE_DOCKER_NETWORK}" \
+  local -a core_net_args=( --network "${LCE_DOCKER_NETWORK}" )
+  if [[ "${LCE_DOCKER}" -eq 1 && "${LCE_DOCKER_HOST_NETWORK}" == "1" ]]; then
+    core_net_args=( --network host )
+  fi
+
+  docker run -d --name "${CORE_AGENT_CONTAINER}" "${core_net_args[@]}" \
     --add-host=host.docker.internal:host-gateway \
     $( [[ "${LCE_DOCKER_PRIVILEGED}" == "1" ]] && echo --privileged ) \
     -e CORE_WS_URL="${docker_ws_url}" \

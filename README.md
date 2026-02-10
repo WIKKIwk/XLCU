@@ -144,6 +144,13 @@ make run LCE_DOCKER_PRIVILEGED=0
 make run-docker LCE_DOCKER_PRIVILEGED=0 LCE_DOCKER_DEVICES=/dev/ttyUSB0,/dev/usb/lp0
 ```
 
+LAN qurilmalar (broadcast/discovery) yoki portlarga "cheklovsiz" ulanish kerak bo'lsa, Docker host-network rejimi yoqilgan (default).
+O'chirish:
+
+```bash
+make run LCE_DOCKER_HOST_NETWORK=0
+```
+
 USB ko'rinyaptimi tekshirish (container ichida):
 
 ```bash
