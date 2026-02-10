@@ -41,6 +41,19 @@ rfid_port = System.get_env("LCE_RFID_PORT") || "8787"
 zebra_host = System.get_env("LCE_ZEBRA_HOST") || "0.0.0.0"
 rfid_host = System.get_env("LCE_RFID_HOST") || "0.0.0.0"
 
+zebra_env =
+  [
+    {"XDG_CACHE_HOME", Path.join(zebra_dir, ".cache")},
+    {"ZEBRA_WEB_HOST", zebra_host},
+    {"ZEBRA_WEB_PORT", zebra_port},
+    {"ZEBRA_NO_TUI", "1"}
+  ]
+  |> then(fn env ->
+    port = System.get_env("ZEBRA_SCALE_PORT") || ""
+    port = String.trim(port)
+    if port != "", do: env ++ [{"ZEBRA_SCALE_PORT", port}], else: env
+  end)
+
 children = [
   # Zebra label printer bridge (C#/.NET)
   %{
@@ -48,12 +61,7 @@ children = [
     cmd: bash,
     args: ["run.sh"],
     cwd: zebra_dir,
-    env: [
-      {"XDG_CACHE_HOME", Path.join(zebra_dir, ".cache")},
-      {"ZEBRA_WEB_HOST", zebra_host},
-      {"ZEBRA_WEB_PORT", zebra_port},
-      {"ZEBRA_NO_TUI", "1"}
-    ]
+    env: zebra_env
   },
   # RFID reader bridge (Java)
   %{
