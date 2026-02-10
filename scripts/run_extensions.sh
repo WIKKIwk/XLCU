@@ -42,6 +42,7 @@ LCE_DOCKER_DNS_SECONDARY="${LCE_DOCKER_DNS_SECONDARY:-8.8.8.8}"
 LCE_DOCKER_RESET="${LCE_DOCKER_RESET:-0}"
 LCE_DOCKER_PRIVILEGED="${LCE_DOCKER_PRIVILEGED:-1}" # 1 = --privileged (USB/serial access)
 LCE_DOCKER_DEVICES="${LCE_DOCKER_DEVICES:-}"        # optional: comma-separated --device entries (e.g. /dev/ttyUSB0,/dev/usb/lp0)
+LCE_DOCKER_DEV_MOUNT="${LCE_DOCKER_DEV_MOUNT:-1}"   # 1 = bind-mount host /dev (hotplug serial devices)
 LCE_DOCKER_HOST_NETWORK="${LCE_DOCKER_HOST_NETWORK:-1}" # 1 = --network host (LAN/broadcast + no port publishing needed)
 LCE_FORCE_DOCKER="${LCE_FORCE_DOCKER:-0}"
 LCE_FORCE_LOCAL="${LCE_FORCE_LOCAL:-0}"
@@ -811,6 +812,10 @@ start_lce_docker() {
   if [[ -d /dev/bus/usb ]]; then
     docker_args+=( -v /dev/bus/usb:/dev/bus/usb )
   fi
+  if [[ "${LCE_DOCKER_PRIVILEGED}" == "1" && "${LCE_DOCKER_DEV_MOUNT}" == "1" ]] && [[ -d /dev ]]; then
+    # Give child apps (Zebra/scale via System.IO.Ports) full visibility of /dev/ttyUSB* hotplug devices.
+    docker_args+=( -v /dev:/dev )
+  fi
 
   if [[ "${use_host_network}" -eq 1 ]]; then
     docker_args+=( --network host )
@@ -1208,6 +1213,9 @@ start_core_agent() {
   fi
   if [[ -d /dev/bus/usb ]]; then
     core_vol_args+=( -v /dev/bus/usb:/dev/bus/usb )
+  fi
+  if [[ "${LCE_DOCKER_PRIVILEGED}" == "1" && "${LCE_DOCKER_DEV_MOUNT}" == "1" ]] && [[ -d /dev ]]; then
+    core_vol_args+=( -v /dev:/dev )
   fi
 
   docker run -d --name "${CORE_AGENT_CONTAINER}" "${core_net_args[@]}" "${core_vol_args[@]}" \

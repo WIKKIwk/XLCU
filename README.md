@@ -136,10 +136,13 @@ make doctor
 Eslatma: `make bootstrap` sizni `docker` group'ga qo'shishi mumkin. Shundan keyin `logout/login` qiling yoki `newgrp docker`.
 
 USB/Serial (printer/RFID/scale) bilan ishlash kerak bo'lsa, `make run` Docker'ni avtomatik `--privileged` bilan ishga tushiradi.
+Shuningdek (default), host'dagi `/dev` ham container ichiga mount qilinadi (`LCE_DOCKER_DEV_MOUNT=1`) — bu USB-serial tarozilar (`/dev/ttyUSB*`, `/dev/ttyACM*`) hotplug bo'lganda ham ko'rinishi uchun.
 Kerak bo'lmasa o'chirib qo'ying:
 
 ```bash
 make run LCE_DOCKER_PRIVILEGED=0
+# /dev mount'ni o'chirish:
+make run LCE_DOCKER_DEV_MOUNT=0
 # ixtiyoriy: faqat aniq device'larni berish:
 make run-docker LCE_DOCKER_PRIVILEGED=0 LCE_DOCKER_DEVICES=/dev/ttyUSB0,/dev/usb/lp0
 ```
@@ -159,6 +162,15 @@ USB ko'rinyaptimi tekshirish (container ichida):
 docker exec lce-bridge-dev lsusb
 docker exec lce-bridge-dev ls -la /dev/ttyUSB* /dev/ttyACM* /dev/usb/lp* 2>/dev/null || true
 ```
+
+Tarozi (scale) tekshiruvi:
+
+```bash
+curl -fsS http://127.0.0.1:18000/api/v1/scale/ports
+curl -fsS http://127.0.0.1:18000/api/v1/scale
+```
+
+Eslatma: hozircha ZebraBridge tarozi o'qish uchun **serial port** (`/dev/ttyUSB*`, `/dev/ttyACM*`) dan foydalanadi. Agar portlar bo'sh chiqsa, tarozi HID bo'lishi yoki Docker ichida device ko'rinmayotgan bo'lishi mumkin.
 
 `make run` birinchi marta ishga tushganda, kerakli child repo'lar (Zebra/RFID) topilmasa ularni avtomatik yuklab oladi:
 

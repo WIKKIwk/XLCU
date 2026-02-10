@@ -465,22 +465,27 @@ defmodule TitanBridge.Telegram.Bot do
   defp do_weight_flow(token, chat_id, product_id) do
     delete_flow_msg(token, chat_id)
 
-    case core_command(chat_id, "scale_read", %{}, 4000) do
-      {:ok, %{"weight" => weight}} when is_number(weight) ->
-        process_print(token, chat_id, product_id, weight, false)
+    # Simulation mode: skip device calls and let operator type the weight immediately.
+    if allow_simulation?() do
+      prompt_manual_weight(token, chat_id, product_id)
+    else
+      case core_command(chat_id, "scale_read", %{}, 4000) do
+        {:ok, %{"weight" => weight}} when is_number(weight) ->
+          process_print(token, chat_id, product_id, weight, false)
 
-      {:ok, %{weight: weight}} when is_number(weight) ->
-        process_print(token, chat_id, product_id, weight, false)
+        {:ok, %{weight: weight}} when is_number(weight) ->
+          process_print(token, chat_id, product_id, weight, false)
 
-      {:ok, _} ->
-        prompt_manual_weight(token, chat_id, product_id)
+        {:ok, _} ->
+          prompt_manual_weight(token, chat_id, product_id)
 
-      {:error, reason} ->
-        Logger.warning(
-          "scale_read failed (#{inspect(reason)}); falling back to manual weight input"
-        )
+        {:error, reason} ->
+          Logger.warning(
+            "scale_read failed (#{inspect(reason)}); falling back to manual weight input"
+          )
 
-        prompt_manual_weight(token, chat_id, product_id)
+          prompt_manual_weight(token, chat_id, product_id)
+      end
     end
   end
 
@@ -489,9 +494,16 @@ defmodule TitanBridge.Telegram.Bot do
     put_temp(chat_id, "batch_product", product_id)
     set_state(chat_id, "awaiting_weight")
 
+    text =
+      if allow_simulation?() do
+        "Simulyatsiya rejimi. Vaznni kiriting (masalan 12.345):"
+      else
+        "Tarozi topilmadi. Vaznni kiriting (masalan 12.345):"
+      end
+
     track_batch_msg(
       chat_id,
-      send_message(token, chat_id, "Tarozi topilmadi. Vaznni kiriting (masalan 12.345):")
+      send_message(token, chat_id, text)
     )
   end
 
