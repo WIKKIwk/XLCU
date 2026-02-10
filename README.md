@@ -11,11 +11,13 @@ LCE/
 ├── Makefile                     # Yordamchi komandalar
 │
 ├── docs/                        # Hujjatlar
-│   ├── ARCHITECTURE.md          # Arxitektura tavsifi
-│   ├── DEPLOYMENT.md            # Deploy qilish
-│   ├── DEVELOPMENT.md           # Development
-│   ├── TELEGRAM.md              # Telegram workflow
-│   └── SECURITY.md              # Xavfsizlik
+│   ├── COMPLETE.md              # To'liq qo'llanma
+│   ├── CORE_README.md           # Core haqida
+│   ├── BRIDGE_README.md         # Bridge haqida
+│   ├── INTEGRATION.md           # Integratsiya
+│   ├── TESTING_README.md        # Testlar
+│   ├── MONITORING_README.md     # Monitoring
+│   └── ARCHIVE.md               # Arxiv/eslatmalar
 │
 ├── src/                         # Asosiy kodlar
 │   ├── core/                    # C# .NET 10 Core
@@ -83,9 +85,10 @@ LCE/
 │   └── alertmanager/
 │
 ├── scripts/                     # Yordamchi skriptlar
-│   ├── setup.sh
-│   ├── deploy.sh
-│   └── backup.sh
+│   ├── bootstrap.sh
+│   ├── doctor.sh
+│   ├── fetch_children.sh
+│   └── run_extensions.sh
 │
 └── .github/                     # CI
     └── workflows/
