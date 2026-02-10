@@ -254,6 +254,55 @@ trim_token() {
   printf '%s' "${token}"
 }
 
+resolve_path() {
+  local p="${1-}"
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f -- "${p}" 2>/dev/null || printf '%s' "${p}"
+    return 0
+  fi
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -- "${p}" 2>/dev/null || printf '%s' "${p}"
+    return 0
+  fi
+  printf '%s' "${p}"
+}
+
+auto_detect_scale_port() {
+  # Many scales are USB-serial devices (/dev/ttyUSB*, /dev/ttyACM*). When there are
+  # multiple serial devices, ZebraBridge will try to probe; but if only one is
+  # present we can pin it to avoid picking ttyS0, etc.
+  #
+  # Respect user override:
+  #   ZEBRA_SCALE_PORT=/dev/ttyUSB0 make run
+  if [[ -n "${ZEBRA_SCALE_PORT:-}" ]]; then
+    return 0
+  fi
+
+  local -a candidates=()
+  local p=""
+
+  # Prefer stable by-id symlinks (best UX; survives replug).
+  while IFS= read -r p; do
+    [[ -e "${p}" ]] || continue
+    local target=""
+    target="$(resolve_path "${p}")"
+    if [[ "${target}" == /dev/ttyUSB* || "${target}" == /dev/ttyACM* ]]; then
+      candidates+=( "${p}" )
+    fi
+  done < <(compgen -G "/dev/serial/by-id/*" 2>/dev/null || true)
+
+  # Fallback to raw device nodes.
+  if [[ "${#candidates[@]}" -eq 0 ]]; then
+    while IFS= read -r p; do candidates+=( "${p}" ); done < <(compgen -G "/dev/ttyUSB*" 2>/dev/null || true)
+    while IFS= read -r p; do candidates+=( "${p}" ); done < <(compgen -G "/dev/ttyACM*" 2>/dev/null || true)
+  fi
+
+  # If there is exactly one obvious serial device, use it.
+  if [[ "${#candidates[@]}" -eq 1 ]]; then
+    export ZEBRA_SCALE_PORT="${candidates[0]}"
+  fi
+}
+
 valid_telegram_token() {
   local token
   token="$(trim_token "${1-}")"
@@ -805,6 +854,10 @@ start_lce_docker() {
     --restart no
   )
 
+  if [[ -n "${ZEBRA_SCALE_PORT:-}" ]]; then
+    docker_args+=( -e ZEBRA_SCALE_PORT="${ZEBRA_SCALE_PORT}" )
+  fi
+
   # Make udev/USB device discovery work the same as host (best-effort).
   if [[ -d /run/udev ]]; then
     docker_args+=( -v /run/udev:/run/udev:ro )
@@ -1001,6 +1054,10 @@ else
   RFID_DIR=""
 fi
 
+# Best-effort: auto-detect serial scale port when exactly one obvious device is present.
+# This helps avoid wrong picks (ttyS0) on some hosts.
+auto_detect_scale_port
+
 if [[ "${LCE_DRY_RUN}" == "1" ]]; then
   echo "DRY RUN"
   echo "LCE_DIR:   ${LCE_DIR}"
@@ -1008,6 +1065,7 @@ if [[ "${LCE_DRY_RUN}" == "1" ]]; then
   echo "TARGET:    ${LCE_CHILDREN_TARGET}"
   echo "ZEBRA_DIR: ${ZEBRA_DIR:-}"
   echo "RFID_DIR:  ${RFID_DIR:-}"
+  echo "ZEBRA_SCALE_PORT: ${ZEBRA_SCALE_PORT:-}"
   exit 0
 fi
 

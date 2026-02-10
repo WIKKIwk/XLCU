@@ -172,6 +172,12 @@ curl -fsS http://127.0.0.1:18000/api/v1/scale
 
 Eslatma: hozircha ZebraBridge tarozi o'qish uchun **serial port** (`/dev/ttyUSB*`, `/dev/ttyACM*`) dan foydalanadi. Agar portlar bo'sh chiqsa, tarozi HID bo'lishi yoki Docker ichida device ko'rinmayotgan bo'lishi mumkin.
 
+Agar bir nechta serial device bo'lsa, skript faqat **bitta** aniq port topilganda avtomatik `ZEBRA_SCALE_PORT` ni set qiladi. Aks holda portni qo'lda ko'rsatish mumkin:
+
+```bash
+ZEBRA_SCALE_PORT=/dev/ttyUSB0 make run
+```
+
 `make run` birinchi marta ishga tushganda, kerakli child repo'lar (Zebra/RFID) topilmasa ularni avtomatik yuklab oladi:
 
 - Zebra: `https://github.com/WIKKIwk/ERPNext_Zebra_stabil_enterprise_version.git`
