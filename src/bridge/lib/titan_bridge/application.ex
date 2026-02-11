@@ -38,9 +38,10 @@ defmodule TitanBridge.Application do
       end
 
     children =
-      children ++ [
-        {Plug.Cowboy, scheme: :http, plug: TitanBridge.Web.Router, options: [port: http_port()]}
-      ]
+      children ++
+        [
+          {Plug.Cowboy, scheme: :http, plug: TitanBridge.Web.Router, options: [port: http_port()]}
+        ]
 
     opts = [strategy: :one_for_one, name: TitanBridge.Supervisor]
     Supervisor.start_link(children, opts)

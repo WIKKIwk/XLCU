@@ -833,7 +833,6 @@ defmodule TitanBridge.Telegram.Bot do
             if print_ok, do: increment_batch_count(chat_id)
             maybe_continue_batch(token, chat_id, product_id, result_text)
           end
-
       end
     end
   end
@@ -844,7 +843,7 @@ defmodule TitanBridge.Telegram.Bot do
       count = get_temp(chat_id, "batch_count") || 0
 
       text =
-          "✓ #{result_text}\n" <>
+        "✓ #{result_text}\n" <>
           "Batch: #{product_id} → #{warehouse} (#{count} ta)\n" <>
           "Kutyapman...\nTugatish uchun /stop"
 
@@ -881,6 +880,7 @@ defmodule TitanBridge.Telegram.Bot do
     else
       state = get_state(chat_id)
       temp_product = get_temp(chat_id, "batch_product") || get_temp(chat_id, "pending_product")
+
       active_product =
         cond do
           is_binary(temp_product) and String.trim(temp_product) != "" -> temp_product
@@ -1085,13 +1085,17 @@ defmodule TitanBridge.Telegram.Bot do
     end
   end
 
-  defp set_batch_cycle_state(chat_id, :wait_item), do: put_temp(chat_id, "batch_cycle_state", "wait_item")
-  defp set_batch_cycle_state(chat_id, :wait_reset), do: put_temp(chat_id, "batch_cycle_state", "wait_reset")
+  defp set_batch_cycle_state(chat_id, :wait_item),
+    do: put_temp(chat_id, "batch_cycle_state", "wait_item")
+
+  defp set_batch_cycle_state(chat_id, :wait_reset),
+    do: put_temp(chat_id, "batch_cycle_state", "wait_reset")
 
   defp batch_candidate(chat_id) do
     with raw_weight when not is_nil(raw_weight) <- get_temp(chat_id, "batch_candidate_weight"),
          {weight, _} when is_number(weight) <- Float.parse(to_string(raw_weight)),
-         since_ms when is_integer(since_ms) <- parse_int_temp(get_temp(chat_id, "batch_candidate_since")) do
+         since_ms when is_integer(since_ms) <-
+           parse_int_temp(get_temp(chat_id, "batch_candidate_since")) do
       {:ok, weight, since_ms}
     else
       _ -> :none
@@ -1099,7 +1103,12 @@ defmodule TitanBridge.Telegram.Bot do
   end
 
   defp set_batch_candidate(chat_id, weight) when is_number(weight) do
-    put_temp(chat_id, "batch_candidate_weight", :erlang.float_to_binary(weight * 1.0, decimals: 6))
+    put_temp(
+      chat_id,
+      "batch_candidate_weight",
+      :erlang.float_to_binary(weight * 1.0, decimals: 6)
+    )
+
     put_temp(chat_id, "batch_candidate_since", System.monotonic_time(:millisecond))
   end
 
@@ -1143,7 +1152,8 @@ defmodule TitanBridge.Telegram.Bot do
 
       raw ->
         case Float.parse(to_string(raw)) do
-          {prev_weight, _} when is_number(prev_weight) -> prev_weight
+          {prev_weight, _} when is_number(prev_weight) ->
+            prev_weight
 
           _ ->
             nil
@@ -1152,7 +1162,11 @@ defmodule TitanBridge.Telegram.Bot do
   end
 
   defp set_last_printed_weight(chat_id, weight) when is_number(weight) do
-    put_temp(chat_id, "batch_last_printed_weight", :erlang.float_to_binary(weight * 1.0, decimals: 6))
+    put_temp(
+      chat_id,
+      "batch_last_printed_weight",
+      :erlang.float_to_binary(weight * 1.0, decimals: 6)
+    )
   end
 
   defp clear_last_printed_weight(chat_id) do
@@ -1178,7 +1192,12 @@ defmodule TitanBridge.Telegram.Bot do
         v when is_number(v) -> min(v, weight)
       end
 
-    put_temp(chat_id, "batch_wait_reset_min_weight", :erlang.float_to_binary(next * 1.0, decimals: 6))
+    put_temp(
+      chat_id,
+      "batch_wait_reset_min_weight",
+      :erlang.float_to_binary(next * 1.0, decimals: 6)
+    )
+
     next
   end
 
@@ -1323,7 +1342,8 @@ defmodule TitanBridge.Telegram.Bot do
           }
         }
 
-        print_result = core_command(chat_id, "print_label", print_payload, batch_print_timeout_ms())
+        print_result =
+          core_command(chat_id, "print_label", print_payload, batch_print_timeout_ms())
 
         case print_result do
           {:ok, _} ->
