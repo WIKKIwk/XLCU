@@ -8,6 +8,12 @@
 # child processes from inside the same container.
 #
 # Versions are pinned via base image tags.
+#
+# Performance: hex/rebar tools and Elixir deps are pre-installed in the image
+# so the first `make run` doesn't waste time downloading/compiling them.
+# deps and _build are stored at /app/_image_deps and /app/_image_build as
+# fallback seeds — run_extensions.sh copies them into the volume-mounted dirs
+# only when those dirs are empty.
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS dotnet
 
@@ -42,6 +48,26 @@ RUN ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet
 ENV DOTNET_ROOT=/usr/share/dotnet
 ENV PATH="/usr/share/dotnet:${PATH}"
 
+# Pre-install hex + rebar so container startup skips the download.
+RUN mix local.hex --force && mix local.rebar --force
+
 WORKDIR /app
+
+# Pre-fetch and compile Elixir dependencies.
+# Only mix.exs, mix.lock, and config are copied — source code is bind-mounted at runtime.
+# This layer is cached by Docker and only rebuilds when deps change.
+COPY mix.exs mix.lock ./
+RUN mix deps.get
+
+COPY config/config.exs config/dev.exs config/
+RUN MIX_ENV=dev mix deps.compile
+
+# Store pre-built deps and _build as image seeds.
+# run_extensions.sh will copy these into empty volume mounts on first run.
+RUN cp -a /app/deps /app/_image_deps \
+ && cp -a /app/_build /app/_image_build
+
+# Clean up working copies (volumes will be mounted over /app/deps and /app/_build).
+RUN rm -rf /app/deps /app/_build /app/config /app/mix.exs /app/mix.lock
 
 CMD ["bash"]

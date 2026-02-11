@@ -28,7 +28,7 @@ RFID_WEB_HOST="${RFID_WEB_HOST:-0.0.0.0}"
 ZEBRA_AUTOPRINT_ENABLED="${ZEBRA_AUTOPRINT_ENABLED:-0}"
 # Avoid extra blank-label feed after encode by default; can be overridden per deployment.
 ZEBRA_FEED_AFTER_ENCODE="${ZEBRA_FEED_AFTER_ENCODE:-0}"
-LCE_WAIT_ATTEMPTS="${LCE_WAIT_ATTEMPTS:-900}"
+LCE_WAIT_ATTEMPTS="${LCE_WAIT_ATTEMPTS:-120}"
 LCE_WAIT_DELAY="${LCE_WAIT_DELAY:-0.5}"
 LCE_KEEP_DOCKER="${LCE_KEEP_DOCKER:-1}"
 LCE_FORCE_RESTART="${LCE_FORCE_RESTART:-1}"
@@ -67,6 +67,7 @@ CORE_PG_DB="${CORE_PG_DB:-titan_core_cache}"
 CORE_PG_USER="${CORE_PG_USER:-core}"
 CORE_PG_PASSWORD="${CORE_PG_PASSWORD:-core_secret}"
 CORE_PG_CONTAINER="lce-core-cache-db"
+LCE_NUGET_CACHE_DIR="${LCE_NUGET_CACHE_DIR:-${WORK_DIR}/.cache/lce-nuget}"
 CORE_AGENT_LOG="${LOG_DIR}/core-agent.log"
 CORE_AGENT_PID=""
 CORE_AGENT_CONTAINER="lce-core-agent-dev"
@@ -770,10 +771,6 @@ ensure_lce_dev_image() {
     return 0
   fi
 
-  if [[ "${LCE_QUIET}" != "1" ]]; then
-    echo "Docker image build: ${LCE_DEV_IMAGE}"
-  fi
-
   local build_log="${LOG_DIR}/lce-dev-image-build.log"
 
   # Some distros ship Docker without a working `buildx` plugin. In that case
@@ -801,6 +798,11 @@ ensure_lce_dev_image() {
       buildkit_env="0"
       ;;
   esac
+
+  # Show progress during image build (can take minutes on first run).
+  if [[ "${LCE_QUIET}" == "1" ]] && [[ -t 1 ]]; then
+    printf "Docker image build (deps bake)...\n"
+  fi
 
   if ! DOCKER_BUILDKIT="${buildkit_env}" docker build \
     -t "${LCE_DEV_IMAGE}" \
@@ -869,9 +871,11 @@ start_lce() {
 	      fi
 	      export CLOAK_KEY="${CLOAK_KEY}"
 	      export MIX_ENV=dev
-      mix local.hex --force
-      mix local.rebar --force
-      mix deps.get
+      if ! ls ~/.mix/archives/hex-* >/dev/null 2>&1; then mix local.hex --force; fi
+      if ! ls ~/.mix/elixir/*/rebar3 >/dev/null 2>&1; then mix local.rebar --force; fi
+      if [ ! -f deps/.deps_fetched ] || ! diff -q mix.lock deps/.mix.lock.cached >/dev/null 2>&1; then
+        mix deps.get && cp mix.lock deps/.mix.lock.cached && touch deps/.deps_fetched
+      fi
       mix ecto.create || true
       mix ecto.migrate
       mix run --no-halt
@@ -975,30 +979,11 @@ start_lce_docker() {
   docker update --restart no "${LCE_DOCKER_CONTAINER}" >/dev/null 2>&1 || true
   docker stop "${LCE_DOCKER_CONTAINER}" >/dev/null 2>&1 || true
   docker rm -f "${LCE_DOCKER_CONTAINER}" >/dev/null 2>&1 || true
-  # _build cache'ni faqat kod o'zgarganda tozalaymiz
-  # Marker fayl oxirgi muvaffaqiyatli build vaqtini saqlaydi
+  # Elixir's mix compile handles incremental recompilation automatically —
+  # it only recompiles modules whose source files changed. Deleting _build
+  # forces a full recompile of ALL deps + app code which is very slow.
+  # We just update the marker for health-check tracking.
   local build_marker="${LCE_BUILD_CACHE_DIR}/.last_build_ts"
-  local source_dir="${LCE_DIR}/src/bridge/lib"
-  local need_rebuild=0
-  if [[ ! -f "${build_marker}" ]]; then
-    need_rebuild=1
-  elif [[ -d "${source_dir}" ]]; then
-    # lib/ yoki config/ da build_marker'dan keyin o'zgargan fayl bormi?
-    local newer
-    newer="$(find "${source_dir}" "${LCE_DIR}/src/bridge/config" \
-      -newer "${build_marker}" -name '*.ex' -o -name '*.exs' 2>/dev/null | head -1)"
-    if [[ -n "${newer}" ]]; then
-      need_rebuild=1
-    fi
-  fi
-  if [[ "${need_rebuild}" -eq 1 && -d "${LCE_BUILD_CACHE_DIR}" ]]; then
-    if [[ "${LCE_QUIET}" != "1" ]]; then
-      echo "Kod o'zgargan — _build tozalanmoqda..."
-    fi
-    docker run --rm -v "${LCE_BUILD_CACHE_DIR}:/cache" busybox rm -rf /cache/* 2>/dev/null \
-      || rm -rf "${LCE_BUILD_CACHE_DIR}" 2>/dev/null || true
-    mkdir -p "${LCE_BUILD_CACHE_DIR}"
-  fi
   if ! docker network ls --format '{{.Name}}' | grep -q "^${LCE_DOCKER_NETWORK}\$"; then
     docker network create "${LCE_DOCKER_NETWORK}" >/dev/null
   fi
@@ -1090,10 +1075,24 @@ start_lce_docker() {
   fi
 
   docker "${docker_args[@]}" "${LCE_DEV_IMAGE}" \
-      bash -lc "if ! ls /root/.mix/archives/hex-* >/dev/null 2>&1; then mix local.hex --force; fi \
+      bash -lc '
+        # Seed deps/build from image if volume mounts are empty (first run).
+        if [ -d /app/_image_deps ] && [ ! -f /app/deps/.seeded ]; then
+          cp -an /app/_image_deps/. /app/deps/ 2>/dev/null || true
+          touch /app/deps/.seeded
+        fi
+        if [ -d /app/_image_build ] && [ ! -f /app/_build/.seeded ]; then
+          cp -an /app/_image_build/. /app/_build/ 2>/dev/null || true
+          touch /app/_build/.seeded
+        fi
+        # hex/rebar (skip if already in image or cache)
+        if ! ls /root/.mix/archives/hex-* >/dev/null 2>&1; then mix local.hex --force; fi \
         && if ! ls /root/.mix/elixir/*/rebar3 >/dev/null 2>&1; then mix local.rebar --force; fi \
-        && mix deps.get \
-        && (mix ecto.create || true) && mix ecto.migrate && mix run --no-halt" \
+        && if [ ! -f deps/.deps_fetched ] || ! diff -q /app/mix.lock /app/deps/.mix.lock.cached >/dev/null 2>&1; then
+             mix deps.get && cp /app/mix.lock /app/deps/.mix.lock.cached && touch /app/deps/.deps_fetched
+           fi \
+        && (mix ecto.create || true) && mix ecto.migrate && mix run --no-halt
+      ' \
       >/dev/null 2>&1
   LCE_DOCKER=1
   LCE_CHILD_HOST="127.0.0.1"
@@ -1489,6 +1488,8 @@ start_core_agent() {
     core_vol_args+=( -v /dev:/dev )
   fi
 
+  mkdir -p "${LCE_NUGET_CACHE_DIR}"
+
   docker run -d --name "${CORE_AGENT_CONTAINER}" "${core_net_args[@]}" "${core_vol_args[@]}" \
     --add-host=host.docker.internal:host-gateway \
     $( [[ "${LCE_DOCKER_PRIVILEGED}" == "1" ]] && echo --privileged ) \
@@ -1502,6 +1503,7 @@ start_core_agent() {
     -e ZEBRA_URL="${docker_zebra_url}" \
     -e RFID_URL="${docker_rfid_url}" \
     -v "${agent_dir}:/agent" \
+    -v "${LCE_NUGET_CACHE_DIR}:/root/.nuget/packages" \
     -w /agent \
     "${LCE_DEV_IMAGE}" \
     bash -lc "dotnet run" >/dev/null 2>&1
@@ -1534,29 +1536,23 @@ if [[ "${LCE_SHOW_ZEBRA_TUI:-0}" == "1" ]] && [[ -t 0 ]] && [[ -t 1 ]]; then
 fi
 
 if [[ "${SHOW_BANNER}" == "1" ]]; then
-  if [[ "${LCE_QUIET}" == "1" ]]; then
-    wait_for_url_with_spinner "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}" "LCE ishga tushmoqda" || true
-  else
-    wait_for_url "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}" >/dev/null 2>&1 || true
-  fi
-
-  # Core agent must be connected before operators start batch; otherwise first scale read can
-  # return :offline and no print happens until manual retry.
-  if [[ "${LCE_QUIET}" != "1" ]]; then
-    if ! wait_for_core_ready; then
-      echo "WARNING: core-agent hali ulanmagan. Bir necha soniyadan keyin qayta urinib ko'ring." >&2
-    fi
-  else
-    wait_for_core_ready >/dev/null 2>&1 || true
-  fi
-
+  # Show URL immediately — user can open it and refresh when ready.
   OPEN_URL="http://127.0.0.1:${LCE_PORT}/api/status"
   if [[ "${LCE_CHILDREN_TARGET}" == *"rfid"* ]] || [[ "${LCE_CHILDREN_TARGET}" == "all" ]]; then
     OPEN_URL="http://127.0.0.1:${RFID_WEB_PORT}/"
   elif [[ "${LCE_CHILDREN_TARGET}" == *"zebra"* ]]; then
     OPEN_URL="http://127.0.0.1:${ZEBRA_WEB_PORT}/"
   fi
-  echo "ishga tushdi ${OPEN_URL} manashu pathni oching"
+  echo "ishga tushmoqda... ${OPEN_URL}"
+
+  # Wait for bridge health in background — notify when ready.
+  (
+    if wait_for_url "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}"; then
+      echo "tayyor! ${OPEN_URL}"
+    else
+      echo "WARNING: bridge ${LCE_WAIT_ATTEMPTS} urinishdan keyin tayyor bo'lmadi." >&2
+    fi
+  ) &
 
   if [[ "${LCE_DOCKER}" -eq 1 ]]; then
     docker wait "${LCE_DOCKER_CONTAINER}" >/dev/null 2>&1
