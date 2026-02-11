@@ -17,8 +17,6 @@ public sealed class MainWindow : Window
     private readonly Button _settingsButton;
     private readonly ProgressBar _stabilityBar;
 
-    private int _printCount = 0;
-
     public MainWindow(BatchProcessingService batchService) : base("TITAN CORE - RFID/Zebra Warehouse System")
     {
         _batchService = batchService;
@@ -63,7 +61,7 @@ public sealed class MainWindow : Window
         _productLabel.Text = $"Product: {_batchService.ActiveProductId ?? "-"}";
         if (_batchService.CurrentWeight.HasValue)
             _weightLabel.Text = $"Weight: {_batchService.CurrentWeight.Value:F3} kg";
-        _countLabel.Text = $"Printed: {_printCount}";
+        _countLabel.Text = $"Printed: {_batchService.PrintCount}";
 
         _startButton.Enabled = state == BatchProcessingState.Idle || state == BatchProcessingState.Paused;
         _stopButton.Enabled = state != BatchProcessingState.Idle;
@@ -95,7 +93,6 @@ public sealed class MainWindow : Window
         if (result && !string.IsNullOrEmpty(dialog.BatchId) && !string.IsNullOrEmpty(dialog.ProductId))
         {
             _batchService.StartBatch(dialog.BatchId, dialog.ProductId, dialog.MinWeight);
-            _printCount = 0;
         }
     }
 

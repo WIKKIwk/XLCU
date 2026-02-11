@@ -10,12 +10,12 @@ defmodule TitanBridge.Children do
     env  — environment variables list
 
   Monitors child processes. On unexpected exit, restarts with backoff.
-  Children inherit LCE_SIMULATE_DEVICES and LCE_CHILDREN_MODE from parent.
+  Children inherit runtime environment variables from parent.
   """
   use GenServer
   require Logger
 
-  alias TitanBridge.SettingsStore
+  alias TitanBridge.{ChildrenTarget, SettingsStore}
 
   def start_link(_args) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -109,7 +109,7 @@ defmodule TitanBridge.Children do
   end
 
   defp filter_children(children) do
-    case child_targets() do
+    case ChildrenTarget.list() do
       :all ->
         children
 
@@ -121,36 +121,22 @@ defmodule TitanBridge.Children do
     end
   end
 
-  defp child_targets do
-    case System.get_env("LCE_CHILDREN_TARGET") do
-      nil ->
-        :all
-
-      "" ->
-        :all
-
-      "all" ->
-        :all
-
-      raw ->
-        targets =
-          raw
-          |> String.split([",", " "], trim: true)
-          |> Enum.map(&String.downcase/1)
-          |> Enum.filter(&(&1 in ["zebra", "rfid"]))
-
-        if targets == [], do: :all, else: targets
-    end
-  end
-
   defp ensure_local_urls do
     zebra_url =
-      System.get_env("LCE_ZEBRA_URL") ||
-        local_url("LCE_ZEBRA_PORT", "18000")
+      if ChildrenTarget.enabled?("zebra") do
+        System.get_env("LCE_ZEBRA_URL") ||
+          local_url("LCE_ZEBRA_PORT", "18000")
+      else
+        nil
+      end
 
     rfid_url =
-      System.get_env("LCE_RFID_URL") ||
-        local_url("LCE_RFID_PORT", "8787")
+      if ChildrenTarget.enabled?("rfid") do
+        System.get_env("LCE_RFID_URL") ||
+          local_url("LCE_RFID_PORT", "8787")
+      else
+        nil
+      end
 
     current = SettingsStore.get()
     updates = %{}
@@ -158,6 +144,13 @@ defmodule TitanBridge.Children do
     updates =
       if blank?(current && current.zebra_url) && zebra_url do
         Map.put(updates, :zebra_url, zebra_url)
+      else
+        updates
+      end
+
+    updates =
+      if is_nil(rfid_url) and not blank?(current && current.rfid_url) do
+        Map.put(updates, :rfid_url, nil)
       else
         updates
       end

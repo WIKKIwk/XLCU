@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.WebSockets;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CoreAgent.Cache;
 
 var cts = new CancellationTokenSource();
@@ -169,8 +171,19 @@ static async Task HandleCommand(ClientWebSocket ws, SemaphoreSlim sendLock, Http
         {
             case "scale_read":
             {
-                var weight = await ReadScaleAsync(http, config.ZebraUrl, ct);
-                await SendResult(ws, sendLock, requestId, true, new { weight }, ct);
+                var reading = await ReadScaleAsync(http, config.ZebraUrl, ct);
+                await SendResult(ws, sendLock, requestId, true, new
+                {
+                    weight = reading.Weight,
+                    stable = reading.Stable,
+                    timestamp_ms = reading.TimestampMs,
+                    port = reading.Port,
+                    min_observed_weight = reading.MinObservedWeight,
+                    max_observed_weight = reading.MaxObservedWeight,
+                    raw_sample_count = reading.RawSampleCount,
+                    saw_zero_pulse = reading.SawZeroPulse,
+                    saw_unstable_pulse = reading.SawUnstablePulse
+                }, ct);
                 break;
             }
             case "print_label":
@@ -203,6 +216,11 @@ static async Task HandleCommand(ClientWebSocket ws, SemaphoreSlim sendLock, Http
             }
             case "rfid_write":
             {
+                if (!config.RfidEnabled)
+                {
+                    await SendResult(ws, sendLock, requestId, false, new { error = "rfid disabled" }, ct);
+                    break;
+                }
                 await rfidLock.WaitAsync(ct);
                 try
                 {
@@ -270,7 +288,10 @@ static async Task StatusLoop(ClientWebSocket ws, SemaphoreSlim sendLock, HttpCli
 static async Task<object> BuildStatusAsync(HttpClient http, CoreConfig config, LocalCache cache, PostgresCache? pgCache, CancellationToken ct)
 {
     var zebra = await HealthCheckAsync(http, $"{config.ZebraUrl}/api/v1/health", ct);
-    var rfid = await HealthCheckAsync(http, $"{config.RfidUrl}/api/status", ct);
+    (bool ok, string? error) rfid =
+        config.RfidEnabled && !string.IsNullOrWhiteSpace(config.RfidUrl)
+            ? await HealthCheckAsync(http, $"{config.RfidUrl}/api/status", ct)
+            : (false, "disabled");
     return new
     {
         ts = DateTime.UtcNow,
@@ -305,16 +326,164 @@ static async Task<(bool ok, string? error)> HealthCheckAsync(HttpClient http, st
     }
 }
 
-static async Task<double> ReadScaleAsync(HttpClient http, string baseUrl, CancellationToken ct)
+static async Task<(
+    double Weight,
+    bool? Stable,
+    long? TimestampMs,
+    string? Port,
+    double? MinObservedWeight,
+    double? MaxObservedWeight,
+    int RawSampleCount,
+    bool SawZeroPulse,
+    bool SawUnstablePulse
+)> ReadScaleAsync(HttpClient http, string baseUrl, CancellationToken ct)
 {
     var url = $"{baseUrl}/api/v1/scale";
     var json = await http.GetStringAsync(url, ct);
     using var doc = JsonDocument.Parse(json);
-    if (doc.RootElement.TryGetProperty("weight", out var w) && w.TryGetDouble(out var weight))
+    var root = doc.RootElement;
+
+    if (root.TryGetProperty("weight", out var w) && TryGetDouble(w, out var weight))
     {
-        return weight;
+        bool? stable = null;
+        if (root.TryGetProperty("stable", out var stableProp))
+        {
+            if (stableProp.ValueKind == JsonValueKind.True)
+            {
+                stable = true;
+            }
+            else if (stableProp.ValueKind == JsonValueKind.False)
+            {
+                stable = false;
+            }
+        }
+
+        long? timestampMs = null;
+        JsonElement tsProp;
+        if (root.TryGetProperty("timestamp_ms", out tsProp) || root.TryGetProperty("timestampMs", out tsProp))
+        {
+            if (tsProp.ValueKind == JsonValueKind.Number && tsProp.TryGetInt64(out var tsNum))
+            {
+                timestampMs = tsNum;
+            }
+            else if (tsProp.ValueKind == JsonValueKind.String && long.TryParse(tsProp.GetString(), out var tsStr))
+            {
+                timestampMs = tsStr;
+            }
+        }
+
+        string? port = null;
+        if (root.TryGetProperty("port", out var portProp) && portProp.ValueKind == JsonValueKind.String)
+        {
+            port = portProp.GetString();
+        }
+
+        string? raw = null;
+        if (root.TryGetProperty("raw", out var rawProp) && rawProp.ValueKind == JsonValueKind.String)
+        {
+            raw = rawProp.GetString();
+        }
+
+        var analyzed = AnalyzeScaleRaw(raw, stable);
+
+        return (
+            weight,
+            stable,
+            timestampMs,
+            port,
+            analyzed.MinObservedWeight,
+            analyzed.MaxObservedWeight,
+            analyzed.RawSampleCount,
+            analyzed.SawZeroPulse,
+            analyzed.SawUnstablePulse
+        );
     }
+
     throw new InvalidOperationException("scale weight missing");
+}
+
+static (
+    double? MinObservedWeight,
+    double? MaxObservedWeight,
+    int RawSampleCount,
+    bool SawZeroPulse,
+    bool SawUnstablePulse
+) AnalyzeScaleRaw(string? raw, bool? stable)
+{
+    // Keep threshold aligned with bridge default zero threshold.
+    const double zeroPulseThreshold = 0.02;
+
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return (null, null, 0, false, stable == false);
+    }
+
+    var samples = 0;
+    double? minObserved = null;
+    double? maxObserved = null;
+    var sawUnstable = stable == false;
+    var sawZero = false;
+
+    foreach (var lineRaw in raw.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+    {
+        var line = lineRaw.Trim();
+        if (line.Length == 0)
+        {
+            continue;
+        }
+
+        if (line.Contains("US", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("UNSTABLE", StringComparison.OrdinalIgnoreCase))
+        {
+            sawUnstable = true;
+        }
+
+        if (!line.Contains("kg", StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        // Prefer the numeric token closest to "kg" (most scale protocols end with "... 12.345 kg").
+        var matches = Regex.Matches(line, @"-?\d+(?:[.,]\d+)?");
+        if (matches.Count == 0)
+        {
+            continue;
+        }
+
+        var numberRaw = matches[matches.Count - 1].Value.Replace(',', '.');
+        if (!double.TryParse(numberRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+        {
+            continue;
+        }
+
+        samples++;
+        minObserved = minObserved.HasValue ? Math.Min(minObserved.Value, value) : value;
+        maxObserved = maxObserved.HasValue ? Math.Max(maxObserved.Value, value) : value;
+        if (value <= zeroPulseThreshold)
+        {
+            sawZero = true;
+        }
+    }
+
+    return (minObserved, maxObserved, samples, sawZero, sawUnstable);
+}
+
+static bool TryGetDouble(JsonElement value, out double number)
+{
+    if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out number))
+    {
+        return true;
+    }
+
+    if (value.ValueKind == JsonValueKind.String &&
+        double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+    {
+        number = parsed;
+        return true;
+    }
+
+    number = 0;
+    return false;
 }
 
 static async Task<object> PrintLabelAsync(HttpClient http, string baseUrl, JsonElement payload, CancellationToken ct)
@@ -560,6 +729,7 @@ record CoreConfig(
     string Token,
     string ZebraUrl,
     string RfidUrl,
+    bool RfidEnabled,
     string ApiBase,
     string CorePgUrl,
     string CorePgSchema,
@@ -574,6 +744,7 @@ record CoreConfig(
         var token = Environment.GetEnvironmentVariable("LCE_CORE_TOKEN") ?? "";
         var zebraUrl = NormalizeUrl(Environment.GetEnvironmentVariable("ZEBRA_URL") ?? "http://127.0.0.1:18000");
         var rfidUrl = NormalizeUrl(Environment.GetEnvironmentVariable("RFID_URL") ?? "http://127.0.0.1:8787");
+        var rfidEnabled = ParseBool(Environment.GetEnvironmentVariable("CORE_RFID_ENABLED"), true);
         var apiBase = NormalizeUrl(Environment.GetEnvironmentVariable("LCE_API_BASE") ?? "http://127.0.0.1:4000");
         var corePgUrl = Environment.GetEnvironmentVariable("CORE_PG_URL") ?? "";
         var corePgSchema = Environment.GetEnvironmentVariable("CORE_PG_SCHEMA") ?? "core_cache";
@@ -581,7 +752,7 @@ record CoreConfig(
         var statusMs = ParseInt(Environment.GetEnvironmentVariable("CORE_STATUS_MS"), 10000);
         var maxConcurrent = ParseInt(Environment.GetEnvironmentVariable("CORE_MAX_CONCURRENCY"), 4);
 
-        return new CoreConfig(wsUrl, deviceId, token, zebraUrl, rfidUrl, apiBase, corePgUrl, corePgSchema, cacheDir, statusMs, maxConcurrent);
+        return new CoreConfig(wsUrl, deviceId, token, zebraUrl, rfidUrl, rfidEnabled, apiBase, corePgUrl, corePgSchema, cacheDir, statusMs, maxConcurrent);
     }
 
     private static int ParseInt(string? value, int fallback)
@@ -591,6 +762,21 @@ record CoreConfig(
             return n;
         }
         return fallback;
+    }
+
+    private static bool ParseBool(string? value, bool fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "1" or "true" or "yes" or "y" or "on" => true,
+            "0" or "false" or "no" or "n" or "off" => false,
+            _ => fallback
+        };
     }
 
     private static string NormalizeUrl(string value)

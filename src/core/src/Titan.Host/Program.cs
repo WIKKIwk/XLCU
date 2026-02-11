@@ -65,13 +65,19 @@ public class Program
         builder.Services.AddScoped<IBatchRepository, BatchRepository>();
         builder.Services.AddScoped<IWeightRecordRepository, WeightRecordRepository>();
 
-        // Services
+        // Data directory for JSON files (EPC counter, weight records)
+        var dataDir = builder.Configuration.GetValue<string>("DataDir")
+                      ?? Path.Combine(AppContext.BaseDirectory, "data");
+        Directory.CreateDirectory(dataDir);
+
+        // Services — JSON-first, no DB in hot path
         builder.Services.AddSingleton<IEpcGenerator>(sp =>
-        {
-            var scope = sp.CreateScope();
-            var context = scope.ServiceProvider.GetRequiredService<TitanDbContext>();
-            return new EpcGenerator(context, "3034257BF7194E4");
-        });
+            new JsonFileEpcGenerator(dataDir, "3034257BF7194E4",
+                sp.GetService<ILogger<JsonFileEpcGenerator>>()));
+
+        builder.Services.AddSingleton(sp =>
+            new JsonFileRecordStore(dataDir,
+                sp.GetService<ILogger<JsonFileRecordStore>>()));
 
         builder.Services.AddSingleton<BatchProcessingService>();
         builder.Services.AddSingleton<IElixirBridgeClient, ElixirBridgeClient>();
@@ -83,6 +89,7 @@ public class Program
         // Hosted Services
         builder.Services.AddHostedService<ScaleReadingService>();
         builder.Services.AddHostedService<DataSyncService>();
+        builder.Services.AddHostedService<DatabaseSyncService>();
         builder.Services.AddHostedService<TuiHostedService>();
 
         // Health Checks

@@ -27,11 +27,20 @@ defmodule TitanBridge.Application do
       TitanBridge.CoreHub,
       TitanBridge.ErpSyncWorker,
       TitanBridge.Children,
-      TitanBridge.Telegram.Bot,
-      TitanBridge.RfidListener,
-      TitanBridge.Telegram.RfidBot,
-      {Plug.Cowboy, scheme: :http, plug: TitanBridge.Web.Router, options: [port: http_port()]}
+      TitanBridge.Telegram.Bot
     ]
+
+    children =
+      if TitanBridge.ChildrenTarget.enabled?("rfid") do
+        children ++ [TitanBridge.RfidListener, TitanBridge.Telegram.RfidBot]
+      else
+        children
+      end
+
+    children =
+      children ++ [
+        {Plug.Cowboy, scheme: :http, plug: TitanBridge.Web.Router, options: [port: http_port()]}
+      ]
 
     opts = [strategy: :one_for_one, name: TitanBridge.Supervisor]
     Supervisor.start_link(children, opts)

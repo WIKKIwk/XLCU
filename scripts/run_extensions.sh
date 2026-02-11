@@ -23,15 +23,22 @@ ZEBRA_WEB_PORT="${ZEBRA_WEB_PORT:-18000}"
 RFID_WEB_PORT="${RFID_WEB_PORT:-8787}"
 ZEBRA_WEB_HOST="${ZEBRA_WEB_HOST:-0.0.0.0}"
 RFID_WEB_HOST="${RFID_WEB_HOST:-0.0.0.0}"
+# XLCU batch flow prints via bridge/core; Zebra's internal scale auto-print must stay off
+# by default to avoid duplicate/empty labels when weight returns to zero.
+ZEBRA_AUTOPRINT_ENABLED="${ZEBRA_AUTOPRINT_ENABLED:-0}"
+# Avoid extra blank-label feed after encode by default; can be overridden per deployment.
+ZEBRA_FEED_AFTER_ENCODE="${ZEBRA_FEED_AFTER_ENCODE:-0}"
 LCE_WAIT_ATTEMPTS="${LCE_WAIT_ATTEMPTS:-900}"
 LCE_WAIT_DELAY="${LCE_WAIT_DELAY:-0.5}"
 LCE_KEEP_DOCKER="${LCE_KEEP_DOCKER:-1}"
-LCE_FORCE_RESTART="${LCE_FORCE_RESTART:-0}"
+LCE_FORCE_RESTART="${LCE_FORCE_RESTART:-1}"
 TG_TOKEN="${TG_TOKEN:-}"
 LCE_MIX_CACHE_DIR="${LCE_MIX_CACHE_DIR:-${WORK_DIR}/.cache/lce-mix}"
 LCE_BUILD_CACHE_DIR="${LCE_BUILD_CACHE_DIR:-${WORK_DIR}/.cache/lce-build}"
 LCE_DEPS_CACHE_DIR="${LCE_DEPS_CACHE_DIR:-${WORK_DIR}/.cache/lce-deps}"
 LCE_CLOAK_KEY_FILE="${LCE_CLOAK_KEY_FILE:-${WORK_DIR}/.cache/lce-cloak.key}"
+LCE_PG_DATA_DIR="${LCE_PG_DATA_DIR:-${WORK_DIR}/.cache/lce-postgres-data}"
+CORE_PG_DATA_DIR="${CORE_PG_DATA_DIR:-${WORK_DIR}/.cache/lce-core-cache-postgres-data}"
 LCE_CHILD_HOST="${LCE_CHILD_HOST:-127.0.0.1}"
 LCE_DOCKER=0
 LCE_DOCKER_CONTAINER="lce-bridge-dev"
@@ -51,12 +58,10 @@ LCE_DEV_IMAGE="${LCE_DEV_IMAGE:-lce-bridge-dev:elixir-1.16.2-dotnet-10.0}"
 LCE_DEV_DOCKERFILE="${LCE_DEV_DOCKERFILE:-${LCE_DIR}/src/bridge/Dockerfile.dev}"
 LCE_DEV_BUILD_CONTEXT="${LCE_DEV_BUILD_CONTEXT:-${LCE_DIR}/src/bridge}"
 LCE_DEV_IMAGE_REBUILD="${LCE_DEV_IMAGE_REBUILD:-0}"
-LCE_SIMULATE_DEVICES="${LCE_SIMULATE_DEVICES:-1}"
 LCE_ZEBRA_TUI_NO_BUILD="${LCE_ZEBRA_TUI_NO_BUILD:-1}"
 LCE_QUIET="${LCE_QUIET:-1}"
 LCE_AUTO_FETCH_CHILDREN="${LCE_AUTO_FETCH_CHILDREN:-1}"
 LCE_DRY_RUN="${LCE_DRY_RUN:-0}"
-export LCE_SIMULATE_DEVICES
 CORE_PG_PORT="${CORE_PG_PORT:-5433}"
 CORE_PG_DB="${CORE_PG_DB:-titan_core_cache}"
 CORE_PG_USER="${CORE_PG_USER:-core}"
@@ -317,6 +322,20 @@ auto_detect_scale_port() {
       return 0
       ;;
   esac
+
+  # First-class support for local fake scale simulator.
+  # If /tmp/xlcu-fake-scale exists, prefer it over random /dev/pts auto-probing.
+  # This keeps factory testing zero-config for operators.
+  local fake_port_link="${ZEBRA_FAKE_SCALE_PORT:-${XLCU_FAKE_SCALE_PORT:-/tmp/xlcu-fake-scale}}"
+  fake_port_link="$(trim_token "${fake_port_link}")"
+  if [[ -n "${fake_port_link}" && -e "${fake_port_link}" ]]; then
+    local fake_target=""
+    fake_target="$(resolve_path "${fake_port_link}")"
+    if [[ -e "${fake_target}" ]]; then
+      export ZEBRA_SCALE_PORT="${fake_port_link}"
+      return 0
+    fi
+  fi
 
   local cache_file="${LCE_SCALE_CACHE_FILE:-${WORK_DIR}/.cache/zebra-scale.by-id}"
   local cache_value=""
@@ -586,19 +605,26 @@ post_config() {
   local zebra_url="$2"
   local rfid_url="$3"
   local target="${LCE_CHILDREN_TARGET:-zebra}"
+  local target_lc="${target,,}"
 
   # Build JSON without Python/jq dependency.
   # Telegram token charset is restricted; URLs here are simple http(s) strings.
   local telegram_token_val=""
   local rfid_token_val=""
-  if [[ "${target}" == *"rfid"* ]]; then
-    rfid_token_val="${telegram_token}"
-  else
+  local zebra_url_val=""
+  local rfid_url_val=""
+
+  if [[ "${target_lc}" == "all" || "${target_lc}" == *"zebra"* ]]; then
     telegram_token_val="${telegram_token}"
+    zebra_url_val="${zebra_url}"
+  fi
+  if [[ "${target_lc}" == "all" || "${target_lc}" == *"rfid"* ]]; then
+    rfid_token_val="${telegram_token}"
+    rfid_url_val="${rfid_url}"
   fi
 
   local payload
-  payload="{\"telegram_token\":\"${telegram_token_val}\",\"rfid_telegram_token\":\"${rfid_token_val}\",\"zebra_url\":\"${zebra_url}\",\"rfid_url\":\"${rfid_url}\"}"
+  payload="{\"telegram_token\":\"${telegram_token_val}\",\"rfid_telegram_token\":\"${rfid_token_val}\",\"zebra_url\":\"${zebra_url_val}\",\"rfid_url\":\"${rfid_url_val}\"}"
 
   if command -v curl >/dev/null 2>&1; then
     curl -fsS -X POST "http://127.0.0.1:${LCE_PORT}/api/config" \
@@ -618,6 +644,27 @@ post_config() {
 
 health_ready() {
   wait_for_url "http://127.0.0.1:${LCE_PORT}/api/health" 1 0
+}
+
+wait_for_core_ready() {
+  local attempts="${LCE_CORE_WAIT_ATTEMPTS:-240}"
+  local delay="${LCE_CORE_WAIT_DELAY:-0.25}"
+  local status_url="http://127.0.0.1:${LCE_PORT}/api/status"
+
+  for _ in $(seq 1 "${attempts}"); do
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsS "${status_url}" 2>/dev/null | grep -q '"device_id":"CORE-'; then
+        return 0
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if wget -qO- "${status_url}" 2>/dev/null | grep -q '"device_id":"CORE-'; then
+        return 0
+      fi
+    fi
+    sleep "${delay}"
+  done
+
+  return 1
 }
 
 find_listen_pid() {
@@ -649,15 +696,42 @@ free_port() {
 
 stop_existing_lce() {
   if command -v docker >/dev/null 2>&1; then
+    docker update --restart no "${CORE_AGENT_CONTAINER}" >/dev/null 2>&1 || true
+    docker rm -f "${CORE_AGENT_CONTAINER}" >/dev/null 2>&1 || true
+    docker update --restart no "${LCE_DOCKER_CONTAINER}" >/dev/null 2>&1 || true
     docker rm -f "${LCE_DOCKER_CONTAINER}" >/dev/null 2>&1 || true
   fi
 
+  # Hard-clean conflicting local listeners before a fresh start.
+  free_port "${LCE_PORT}"
+  free_port "${ZEBRA_WEB_PORT}"
+  free_port "${RFID_WEB_PORT}"
+
+  # Also kill stale local bridge/core processes from this workspace (if any).
   local pid
-  pid="$(find_listen_pid "${LCE_PORT}")"
-  if [[ -n "${pid}" ]]; then
+  while read -r pid; do
+    [[ -z "${pid}" ]] && continue
     kill "${pid}" >/dev/null 2>&1 || true
     sleep 0.2
-  fi
+    if kill -0 "${pid}" >/dev/null 2>&1; then
+      kill -9 "${pid}" >/dev/null 2>&1 || true
+    fi
+  done < <(
+    ps -eo pid=,args= | awk \
+      -v self="$$" \
+      -v lce_bridge="${LCE_DIR}/src/bridge" \
+      -v lce_core="${LCE_DIR}/src/core_agent" '
+      {
+        pid=$1
+        $1=""
+        cmd=$0
+        if (pid == self) next
+        if ((index(cmd, lce_bridge) > 0 && index(cmd, "mix run --no-halt") > 0) ||
+            (index(cmd, lce_core) > 0 && index(cmd, "dotnet run") > 0)) {
+          print pid
+        }
+      }'
+  )
 }
 
 ensure_lce_dev_image() {
@@ -812,6 +886,7 @@ start_lce() {
 }
 
 ensure_postgres() {
+  mkdir -p "${LCE_PG_DATA_DIR}"
   if command -v pg_isready >/dev/null 2>&1; then
     if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
       return 0
@@ -833,6 +908,7 @@ ensure_postgres() {
   fi
   docker run -d --name "${LCE_POSTGRES_CONTAINER}" --network "${LCE_DOCKER_NETWORK}" \
     -e POSTGRES_USER=titan -e POSTGRES_PASSWORD=titan_secret -e POSTGRES_DB=titan_bridge_dev \
+    -v "${LCE_PG_DATA_DIR}:/var/lib/postgresql/data" \
     -p 5432:5432 --restart unless-stopped postgres:16-alpine >/dev/null
   for _ in $(seq 1 30); do
     if docker exec "${LCE_POSTGRES_CONTAINER}" pg_isready -U titan -d titan_bridge_dev >/dev/null 2>&1; then
@@ -845,6 +921,7 @@ ensure_postgres() {
 }
 
 ensure_core_cache_postgres() {
+  mkdir -p "${CORE_PG_DATA_DIR}"
   if command -v pg_isready >/dev/null 2>&1; then
     if pg_isready -h 127.0.0.1 -p "${CORE_PG_PORT}" >/dev/null 2>&1; then
       return 0
@@ -866,6 +943,7 @@ ensure_core_cache_postgres() {
   fi
   docker run -d --name "${CORE_PG_CONTAINER}" --network "${LCE_DOCKER_NETWORK}" \
     -e POSTGRES_USER="${CORE_PG_USER}" -e POSTGRES_PASSWORD="${CORE_PG_PASSWORD}" -e POSTGRES_DB="${CORE_PG_DB}" \
+    -v "${CORE_PG_DATA_DIR}:/var/lib/postgresql/data" \
     -p "${CORE_PG_PORT}:5432" --restart unless-stopped postgres:16-alpine >/dev/null
   for _ in $(seq 1 30); do
     if docker exec "${CORE_PG_CONTAINER}" pg_isready -U "${CORE_PG_USER}" -d "${CORE_PG_DB}" >/dev/null 2>&1; then
@@ -948,9 +1026,10 @@ start_lce_docker() {
     -e LCE_HTTP_PORT="${http_port_in_container}"
     -e CLOAK_KEY="${CLOAK_KEY}"
     -e LCE_HOST_ALIAS="host.docker.internal"
-    -e LCE_SIMULATE_DEVICES="${LCE_SIMULATE_DEVICES}"
     -e "LCE_CHILDREN_TARGET=${LCE_CHILDREN_TARGET:-all}"
     -e "LCE_CHILDREN_MODE=${LCE_CHILDREN_MODE:-on}"
+    -e "ZEBRA_AUTOPRINT_ENABLED=${ZEBRA_AUTOPRINT_ENABLED}"
+    -e "ZEBRA_FEED_AFTER_ENCODE=${ZEBRA_FEED_AFTER_ENCODE}"
     -v "${LCE_MIX_CACHE_DIR}:/root/.mix"
     -v "${LCE_DIR}/src/bridge:/app"
     -v "${LCE_BUILD_CACHE_DIR}:/app/_build"
@@ -962,6 +1041,11 @@ start_lce_docker() {
 
   if [[ -n "${ZEBRA_SCALE_PORT:-}" ]]; then
     docker_args+=( -e ZEBRA_SCALE_PORT="${ZEBRA_SCALE_PORT}" )
+    # External fake-scale simulators often expose a stable symlink in /tmp.
+    # Mount /tmp so the same path is visible inside the container.
+    if [[ "${ZEBRA_SCALE_PORT}" == /tmp/* ]]; then
+      docker_args+=( -v /tmp:/tmp )
+    fi
   fi
 
   # Make udev/USB device discovery work the same as host (best-effort).
@@ -1042,6 +1126,12 @@ if [[ -z "${LCE_CHILDREN_TARGET:-}" ]]; then
     echo "  1) Zebra"
     echo "  2) RFID"
     read -r -p "Choice [1-2] (default: 1): " choice
+    # Be tolerant to terminal artifacts (CR/extra spaces after Ctrl+C/Ctrl+Z, paste mode, etc.).
+    choice="$(printf '%s' "${choice}" | tr -d '\r' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+    # If input accidentally carries control chars, keep only the first valid option digit.
+    if [[ "${choice}" =~ [12] ]]; then
+      choice="${BASH_REMATCH[0]}"
+    fi
     case "${choice}" in
       2)
         LCE_CHILDREN_TARGET="rfid"
@@ -1232,6 +1322,8 @@ printf '%s' "${TG_TOKEN}" > "${LCE_TOKEN_FILE}"
 chmod 600 "${LCE_TOKEN_FILE}"
 
 export TG_TOKEN LCE_CHILDREN_TARGET
+export ZEBRA_AUTOPRINT_ENABLED
+export ZEBRA_FEED_AFTER_ENCODE
 export LCE_ZEBRA_PORT="${ZEBRA_WEB_PORT}"
 export LCE_RFID_PORT="${RFID_WEB_PORT}"
 export LCE_ZEBRA_URL="http://${LCE_CHILD_HOST}:${ZEBRA_WEB_PORT}"
@@ -1302,20 +1394,29 @@ start_core_agent() {
     return 0
   fi
   ensure_core_cache_postgres
+  local target_lc="${LCE_CHILDREN_TARGET:-all}"
+  target_lc="${target_lc,,}"
+  local core_rfid_enabled="0"
+  if [[ "${target_lc}" == "all" || "${target_lc}" == *"rfid"* ]]; then
+    core_rfid_enabled="1"
+  fi
 
   # Host endpoints (used by local `dotnet run`)
   local host_ws_url="ws://127.0.0.1:${LCE_PORT}/ws/core"
   local host_api_base="http://127.0.0.1:${LCE_PORT}"
-  local host_pg_url="postgres://${CORE_PG_USER}:${CORE_PG_PASSWORD}@127.0.0.1:${CORE_PG_PORT}/${CORE_PG_DB}"
+  local host_pg_url="Host=127.0.0.1;Port=${CORE_PG_PORT};Database=${CORE_PG_DB};Username=${CORE_PG_USER};Password=${CORE_PG_PASSWORD};Pooling=true"
   local host_zebra_url="http://127.0.0.1:${ZEBRA_WEB_PORT}"
   local host_rfid_url="http://127.0.0.1:${RFID_WEB_PORT}"
+  if [[ "${core_rfid_enabled}" != "1" ]]; then
+    host_rfid_url=""
+  fi
 
   # Container endpoints (used when core-agent runs in Docker)
   local docker_ws_url
   local docker_api_base
   local docker_zebra_url
   local docker_rfid_url
-  local docker_pg_url="postgres://${CORE_PG_USER}:${CORE_PG_PASSWORD}@${CORE_PG_CONTAINER}:5432/${CORE_PG_DB}"
+  local docker_pg_url="Host=${CORE_PG_CONTAINER};Port=5432;Database=${CORE_PG_DB};Username=${CORE_PG_USER};Password=${CORE_PG_PASSWORD};Pooling=true"
 
   if [[ "${LCE_DOCKER}" -eq 1 ]]; then
     if [[ "${LCE_DOCKER_HOST_NETWORK}" == "1" ]]; then
@@ -1324,7 +1425,7 @@ start_core_agent() {
       docker_api_base="http://127.0.0.1:${LCE_PORT}"
       docker_zebra_url="http://127.0.0.1:${ZEBRA_WEB_PORT}"
       docker_rfid_url="http://127.0.0.1:${RFID_WEB_PORT}"
-      docker_pg_url="postgres://${CORE_PG_USER}:${CORE_PG_PASSWORD}@127.0.0.1:${CORE_PG_PORT}/${CORE_PG_DB}"
+      docker_pg_url="Host=127.0.0.1;Port=${CORE_PG_PORT};Database=${CORE_PG_DB};Username=${CORE_PG_USER};Password=${CORE_PG_PASSWORD};Pooling=true"
     else
       docker_ws_url="ws://${LCE_DOCKER_CONTAINER}:4000/ws/core"
       docker_api_base="http://${LCE_DOCKER_CONTAINER}:4000"
@@ -1337,14 +1438,20 @@ start_core_agent() {
     docker_zebra_url="http://host.docker.internal:${ZEBRA_WEB_PORT}"
     docker_rfid_url="http://host.docker.internal:${RFID_WEB_PORT}"
   fi
+  if [[ "${core_rfid_enabled}" != "1" ]]; then
+    docker_rfid_url=""
+  fi
 
-  if command -v dotnet >/dev/null 2>&1; then
+  # In Docker mode prefer running core-agent in Docker too, so it survives shell exit
+  # when LCE_KEEP_DOCKER=1 and doesn't get tied to this wrapper process lifecycle.
+  if [[ "${LCE_DOCKER}" -ne 1 ]] && command -v dotnet >/dev/null 2>&1; then
     export CORE_WS_URL="${host_ws_url}"
     export CORE_DEVICE_ID="${CORE_DEVICE_ID:-CORE-01}"
     export LCE_API_BASE="${host_api_base}"
     export LCE_CORE_TOKEN="${LCE_CORE_TOKEN:-}"
     export CORE_PG_URL="${host_pg_url}"
     export CORE_PG_SCHEMA="${CORE_PG_SCHEMA:-core_cache}"
+    export CORE_RFID_ENABLED="${core_rfid_enabled}"
     export ZEBRA_URL="${host_zebra_url}"
     export RFID_URL="${host_rfid_url}"
 
@@ -1391,6 +1498,7 @@ start_core_agent() {
     -e LCE_CORE_TOKEN="${LCE_CORE_TOKEN:-}" \
     -e CORE_PG_URL="${docker_pg_url}" \
     -e CORE_PG_SCHEMA="${CORE_PG_SCHEMA:-core_cache}" \
+    -e CORE_RFID_ENABLED="${core_rfid_enabled}" \
     -e ZEBRA_URL="${docker_zebra_url}" \
     -e RFID_URL="${docker_rfid_url}" \
     -v "${agent_dir}:/agent" \
@@ -1430,6 +1538,16 @@ if [[ "${SHOW_BANNER}" == "1" ]]; then
     wait_for_url_with_spinner "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}" "LCE ishga tushmoqda" || true
   else
     wait_for_url "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}" >/dev/null 2>&1 || true
+  fi
+
+  # Core agent must be connected before operators start batch; otherwise first scale read can
+  # return :offline and no print happens until manual retry.
+  if [[ "${LCE_QUIET}" != "1" ]]; then
+    if ! wait_for_core_ready; then
+      echo "WARNING: core-agent hali ulanmagan. Bir necha soniyadan keyin qayta urinib ko'ring." >&2
+    fi
+  else
+    wait_for_core_ready >/dev/null 2>&1 || true
   fi
 
   OPEN_URL="http://127.0.0.1:${LCE_PORT}/api/status"

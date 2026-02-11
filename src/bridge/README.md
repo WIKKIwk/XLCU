@@ -125,7 +125,6 @@ Nostandart joylashuv bo'lsa:
 |-------------|---------|--------|
 | `LCE_CHILDREN_TARGET` | — | `zebra`, `rfid` yoki `all`. `make run` da tanlanadi |
 | `LCE_CHILDREN_MODE` | `on` | `off`/`0`/`false` = child jarayonlar ishga tushmaydi |
-| `LCE_SIMULATE_DEVICES` | `1` | `1` = simulyatsiya rejimi (real qurilma yo'q) |
 | `LCE_PORT` | `4000` | Bridge HTTP port |
 | `LCE_SYNC_INTERVAL_MS` | `10000` | ERPNext sync oraligi (ms) |
 | `LCE_SYNC_FULL_EVERY` | `6` | Har nechta siklda to'liq sync (incremental emas) |
@@ -248,7 +247,7 @@ Ombor tanlaydi ────────────►
 4. **Ombor tanlash** — yana inline query orqali. Faqat tanlangan mahsulot uchun zaxira bor omborlar (Bin jadvalidan filtrlangan) ko'rsatiladi. Har bir ombor yonida zaxira miqdori va birlik ko'rsatiladi. Cache'da bo'lmasa `ErpClient.list_warehouses_for_product()` fallback. Natija `warehouse:Stores - T` formatida
 5. **Batch sikl boshlanadi** — `begin_weight_flow()` chaqiriladi:
    - **Zaxira tekshirish** — `Cache.warehouses_for_item()` orqali. Agar 0 bo'lsa — "Mahsulot tugadi", batch to'xtatiladi. Agar ≤10 bo'lsa — "Diqqat: X dona qoldi!" ogohlantirish
-   - **Tarozi o'qish** — `CoreHub.command("scale_read")` orqali. CoreHub ulanmagan bo'lsa yoki `LCE_SIMULATE_DEVICES=1` bo'lsa — "Vaznni kiriting (masalan 12.345)" so'raladi. Operator qo'lda kg kiritadi
+   - **Tarozi o'qish** — avval doim `CoreHub.command("scale_read")` orqali real o'qish uriniladi. Xato bo'lsa "Vaznni kiriting (masalan 12.345)" so'raladi
 6. **process_print()** — 5 ta bosqich ketma-ket:
    - **EPC generatsiya** — `EpcGenerator.next()` yangi 24-belgili hex EPC yaratadi. `epc_exists?()` ERPNext'dan tekshiradi — bor bo'lsa 5 marta qayta urinadi
    - **Etiket bosish** — `CoreHub.command("print_label")` Zebra printerga yuboradi. Payload: `epc`, `product_id`, `weight_kg`, `label_fields` (nomi, og'irlik, EPC hex)
@@ -265,15 +264,6 @@ Ombor tanlaydi ────────────►
 8. **Sikl davomi** — 2 soniya kutgandan keyin `begin_weight_flow()` qayta chaqiriladi. Operator keyingi mahsulotni taroziga qo'yishi kutiladi
 9. **`/stop`** — batch tugatiladi, vaqtinchalik xabarlar tozalanadi, state "ready" ga qaytadi
 10. **ERPNext aloqa uzilsa** — batch avtomatik to'xtatiladi, "Qayta urinish" tugmasi chiqadi
-
-### Simulyatsiya rejimi
-
-`LCE_SIMULATE_DEVICES=1` (default) bo'lganda:
-- Tarozi o'qish xatosida → qo'lda vazn kiritish so'raladi (real tarozisiz ishlash)
-- Printer xatosida → draft yaratish hali ham davom etadi
-- RFID yozish xatosida → draft yaratish hali ham davom etadi
-
-Ishlab chiqarishda `LCE_SIMULATE_DEVICES=0` qo'yiladi — haqiqiy qurilmalar talab qilinadi.
 
 ### Zebra Bot state machine
 
