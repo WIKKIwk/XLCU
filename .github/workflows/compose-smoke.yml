@@ -1,0 +1,50 @@
+name: Compose Smoke
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  compose-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [zebra, rfid]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight
+        run: make doctor
+
+      - name: Start stack (${{ matrix.target }})
+        env:
+          TG_TOKEN: "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+          LCE_CHILDREN_TARGET: ${{ matrix.target }}
+          LCE_DOCKER_PRIVILEGED: "0"
+          LCE_SIM_MODE: "1"
+          LCE_FORCE_RESTART: "1"
+        run: make run
+
+      - name: Verify health endpoints
+        run: |
+          curl -fsS http://127.0.0.1:4000/api/health
+          curl -fsS http://127.0.0.1:4000/api/status
+          if [ "${{ matrix.target }}" = "zebra" ]; then
+            curl -fsS http://127.0.0.1:18000/api/v1/health
+          else
+            curl -fsS http://127.0.0.1:8787/api/status
+          fi
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.run.yml -p lce ps -a || true
+          docker compose -f docker-compose.run.yml -p lce logs --no-color || true
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.run.yml -p lce down --remove-orphans
