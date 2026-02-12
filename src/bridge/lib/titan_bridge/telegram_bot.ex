@@ -383,10 +383,13 @@ defmodule TitanBridge.Telegram.Bot do
   defp send_batch_prompt(token, chat_id) do
     case ErpClient.ping() do
       {:ok, _} ->
+        last_print_mid = get_temp(chat_id, "last_print_msg_id")
+        if last_print_mid, do: delete_message(token, chat_id, last_print_mid)
         delete_flow_msg(token, chat_id)
         delete_temp(chat_id, "pending_product")
         delete_temp(chat_id, "warehouse")
         delete_temp(chat_id, "batch_active")
+        delete_temp(chat_id, "last_print_msg_id")
         set_state(chat_id, "ready")
         put_temp(chat_id, "inline_mode", "product")
 
@@ -422,6 +425,9 @@ defmodule TitanBridge.Telegram.Bot do
 
   defp stop_batch(token, chat_id) do
     product_id = get_temp(chat_id, "pending_product")
+    # Oxirgi print xabarini o'chirish
+    last_print_mid = get_temp(chat_id, "last_print_msg_id")
+    if last_print_mid, do: delete_message(token, chat_id, last_print_mid)
     clear_batch_msgs(token, chat_id)
     delete_flow_msg(token, chat_id)
     clear_temp(chat_id)
@@ -834,7 +840,14 @@ defmodule TitanBridge.Telegram.Bot do
               increment_batch_count(chat_id)
               count = get_temp(chat_id, "batch_count") || 0
               item_text = "🖨 #{count}-chi item print qilindi\n#{result_text}"
-              Task.start(fn -> send_message(token, chat_id, item_text) end)
+
+              # Avvalgi print xabarini o'chirish
+              old_print_mid = get_temp(chat_id, "last_print_msg_id")
+              if old_print_mid, do: delete_message(token, chat_id, old_print_mid)
+
+              # Yangi xabar yuborish va message_id ni saqlash
+              new_mid = send_message(token, chat_id, item_text)
+              if new_mid, do: put_temp(chat_id, "last_print_msg_id", new_mid)
             end
 
             maybe_continue_batch(token, chat_id, product_id, result_text)
