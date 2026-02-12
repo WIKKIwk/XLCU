@@ -119,13 +119,14 @@ Barcha fayllar `PROJECT_TITAN_*.cs` dan ajratilgan:
 
 ## 🚀 Tez Boshlash
 
-### Eng oson (kafolatli) usul: Docker bilan `make run`
+### Eng oson (kafolatli) usul: Docker Compose bilan `make run`
 
-Bu rejimda host kompyuterda Elixir/.NET/Java/Node o'rnatish shart emas (faqat Docker kerak).
+Bu rejimda host kompyuterda Elixir/.NET/Java/Node o'rnatish shart emas (faqat Docker + Docker Compose kerak).
 
 ```bash
 cd XLCU
 make bootstrap   # Ubuntu/Arch: git + docker va kerakli utilitalar
+cp .env.run.example .env.run   # ixtiyoriy, jamoa uchun bir xil profil
 make run
 # ixtiyoriy: tekshiruv
 make doctor
@@ -135,25 +136,42 @@ make doctor
 
 Eslatma: `make bootstrap` sizni `docker` group'ga qo'shishi mumkin. Shundan keyin `logout/login` qiling yoki `newgrp docker`.
 
-USB/Serial (printer/RFID/scale) bilan ishlash kerak bo'lsa, `make run` Docker'ni avtomatik `--privileged` bilan ishga tushiradi.
-Shuningdek (default), host'dagi `/dev` ham container ichiga mount qilinadi (`LCE_DOCKER_DEV_MOUNT=1`) — bu USB-serial tarozilar (`/dev/ttyUSB*`, `/dev/ttyACM*`) hotplug bo'lganda ham ko'rinishi uchun.
-Kerak bo'lmasa o'chirib qo'ying:
+`make run` stack'i compose orqali quyidagilarni ko'taradi:
+
+- `postgres` (`lce-postgres-dev`)
+- `bridge` (`lce-bridge-dev`)
+- `core-agent` (`lce-core-agent-dev`)
+
+USB/Serial (printer/RFID/scale) bilan ishlash kerak bo'lsa `--privileged` rejimni yoqib ishlating:
 
 ```bash
-make run LCE_DOCKER_PRIVILEGED=0
-# /dev mount'ni o'chirish:
-make run LCE_DOCKER_DEV_MOUNT=0
-# ixtiyoriy: faqat aniq device'larni berish:
-make run-docker LCE_DOCKER_PRIVILEGED=0 LCE_DOCKER_DEVICES=/dev/ttyUSB0,/dev/usb/lp0
+make run-hw
+# yoki:
+make run LCE_DOCKER_PRIVILEGED=1
 ```
 
 Eslatma: agar Docker **rootless** rejimda bo'lsa, USB/serial qurilmalar container ichida ishlamasligi mumkin (hatto `--privileged` bilan ham).
 
-LAN qurilmalar (broadcast/discovery) yoki portlarga "cheklovsiz" ulanish kerak bo'lsa, Docker host-network rejimi yoqilgan (default).
-O'chirish:
+Eski (`docker run`-based) yo'lga qaytish kerak bo'lsa:
 
 ```bash
-make run LCE_DOCKER_HOST_NETWORK=0
+make run-legacy
+```
+
+Hardware-siz (CI/laptop) rasmiy simulyatsiya rejimi:
+
+```bash
+make run-sim
+# RFID target bilan:
+make run-sim-rfid
+```
+
+Prebuilt dev image ishlatish (mahalliy build farqlarini kamaytirish):
+
+```bash
+LCE_USE_PREBUILT_DEV_IMAGE=1 \
+LCE_DEV_IMAGE=ghcr.io/<org>/xlcu-bridge-dev:elixir-1.16.2-dotnet-10.0 \
+make run
 ```
 
 USB ko'rinyaptimi tekshirish (container ichida):
@@ -210,6 +228,12 @@ Ixtiyoriy: oldindan yuklab olish (internet sekin/offline bo'lsa):
 
 ```bash
 bash scripts/fetch_children.sh
+```
+
+Diagnostika arxivi (support bundle) olish:
+
+```bash
+make support-bundle
 ```
 
 ### RFID Telegram bot: draft submit (/submit)
