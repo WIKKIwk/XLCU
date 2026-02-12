@@ -194,17 +194,25 @@ defmodule TitanBridge.Children do
     end)
   end
 
-  defp start_child(%{cmd: cmd} = child) when is_binary(cmd) do
+  defp start_child(%{cmd: cmd} = child) when is_binary(cmd) or is_list(cmd) do
+    # cmd charlist yoki binary bo'lishi mumkin (restart da charlist keladi)
+    cmd_bin = if is_list(cmd), do: to_string(cmd), else: cmd
     args = child.args || []
-    cwd = child.cwd
+    cwd = child[:cwd]
+
+    # args ham charlist yoki binary bo'lishi mumkin
+    args_bin = Enum.map(args, fn
+      a when is_list(a) -> to_string(a)
+      a -> a
+    end)
 
     cond do
-      cwd && !File.dir?(cwd) ->
+      cwd && is_binary(cwd) && !File.dir?(cwd) ->
         {:error, {:invalid_cwd, cwd}}
 
-      match?([script | _], args) && cwd && is_binary(hd(args)) &&
-          !File.exists?(Path.join(cwd, hd(args))) ->
-        {:error, {:missing_script, Path.join(cwd, hd(args))}}
+      match?([script | _], args_bin) && cwd && is_binary(hd(args_bin)) &&
+          !File.exists?(Path.join(to_string(cwd), hd(args_bin))) ->
+        {:error, {:missing_script, Path.join(to_string(cwd), hd(args_bin))}}
 
       true ->
         :ok
@@ -214,22 +222,23 @@ defmodule TitanBridge.Children do
         err
 
       _ ->
-        args = Enum.map(args, &to_charlist/1)
-        cmd = to_charlist(cmd)
+        charlist_args = Enum.map(args_bin, &to_charlist/1)
+        charlist_cmd = to_charlist(cmd_bin)
 
         opts = [
           :binary,
           :exit_status,
-          {:args, args}
+          {:args, charlist_args}
         ]
 
-        opts = if child.cwd, do: opts ++ [{:cd, to_charlist(child.cwd)}], else: opts
+        cwd_str = if cwd, do: to_string(cwd), else: nil
+        opts = if cwd_str, do: opts ++ [{:cd, to_charlist(cwd_str)}], else: opts
 
         opts =
-          if child.env do
+          if child[:env] do
             env =
               Enum.map(child.env, fn {key, value} ->
-                {to_charlist(key), to_charlist(value)}
+                {to_charlist(to_string(key)), to_charlist(to_string(value))}
               end)
 
             opts ++ [{:env, env}]
@@ -237,14 +246,16 @@ defmodule TitanBridge.Children do
             opts
           end
 
-        port = Port.open({:spawn_executable, cmd}, opts)
+        port = Port.open({:spawn_executable, charlist_cmd}, opts)
 
         {:ok, port,
          %{
            name: child.name,
            port: port,
-           cmd: cmd,
-           cwd: child.cwd,
+           cmd: cmd_bin,
+           args: args_bin,
+           cwd: cwd_str,
+           env: child[:env],
            restart: Map.get(child, :restart, true),
            restart_delay_ms: Map.get(child, :restart_delay_ms, 1500)
          }}
