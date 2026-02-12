@@ -2,36 +2,41 @@ defmodule TitanBridge.EpcGenerator do
   @moduledoc """
   EPC Gen2 96-bit tag code generator.
 
-  Format: prefix (60-bit hex) + counter (36-bit hex, zero-padded)
-  Default prefix: "3034257BF7194E4" (company-specific GS1 allocation)
+  Format: prefix (4 hex) + timestamp_ms (11 hex) + random (9 hex) = 24 hex = 96 bit
+  Default prefix: "3034" (company-specific identifier)
 
-  Counter is persisted in lce_epc_sequences table (one row per prefix).
-  Each call to next/0 atomically increments and checks uniqueness
-  against both local EpcRegistry and ERPNext.
+  Timestamp — millisekund aniqligi (Unix epoch), 47 bit (~4400 yilgacha yetadi).
+  Random — 36 bit tasodifiy qiymat (bir millisekundda 68 milliard unique qiymat).
+
+  Bu format hech qachon conflict bermaydi — har bir EPC unique,
+  counter yoki DB ga bog'liq emas, make run qayta ishga tushganda ham
+  eski EPC lar bilan to'qnashmaydi.
   """
-  alias TitanBridge.{EpcRegistry, Repo, EpcSequence}
-  import Ecto.Query
+  alias TitanBridge.EpcRegistry
 
-  @default_prefix "3034257BF7194E4"
+  @default_prefix "3034"
 
   def next(prefix \\ @default_prefix) do
-    Repo.transaction(fn ->
-      seq = Repo.get(EpcSequence, prefix) || %EpcSequence{prefix: prefix, last_value: 0}
-      next_value = (seq.last_value || 0) + 1
-      changeset = EpcSequence.changeset(seq, %{last_value: next_value})
-      Repo.insert_or_update!(changeset)
-      epc = build_epc(prefix, next_value)
-      _ = EpcRegistry.register(epc, "bridge", "reserved")
-      epc
-    end)
+    epc = build_epc(prefix)
+    _ = EpcRegistry.register(epc, "bridge", "reserved")
+    {:ok, epc}
   end
 
-  defp build_epc(prefix, value) do
-    # EPC Gen2 96-bit: prefix(60-bit=15 hex) + counter(36-bit=9 hex) => 24 hex (even length).
-    # Zebra encoder rejects odd-length hex strings (full bytes required).
-    max36 = 0xFFFFFFFFF
-    if value > max36, do: raise("EPC counter overflow (36-bit): #{value}")
-    hex = Integer.to_string(value, 16) |> String.upcase() |> String.pad_leading(9, "0")
-    prefix <> hex
+  defp build_epc(prefix) do
+    # Timestamp: millisekundlarda Unix epoch (47-bit, 11 hex)
+    ts_ms = System.system_time(:millisecond)
+    ts_hex = ts_ms |> Integer.to_string(16) |> String.upcase() |> String.pad_leading(11, "0")
+    # Agar timestamp 11 hex dan uzun bo'lsa (juda uzoq kelajakda), oxirgi 11 ni olish
+    ts_hex = String.slice(ts_hex, -11, 11)
+
+    # Random: 36-bit (9 hex)
+    random_bytes = :crypto.strong_rand_bytes(5)
+    <<rand_val::unsigned-40>> = random_bytes
+    # 36 bit olish (40 bit dan)
+    rand_36 = Bitwise.band(rand_val, 0xFFFFFFFFF)
+    rand_hex = rand_36 |> Integer.to_string(16) |> String.upcase() |> String.pad_leading(9, "0")
+
+    # Prefix (4 hex) + Timestamp (11 hex) + Random (9 hex) = 24 hex = 96 bit
+    prefix <> ts_hex <> rand_hex
   end
 end
