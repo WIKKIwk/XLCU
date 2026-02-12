@@ -1,0 +1,134 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lce-postgres-dev
+    environment:
+      POSTGRES_USER: titan
+      POSTGRES_PASSWORD: titan_secret
+      POSTGRES_DB: titan_bridge_dev
+    volumes:
+      - ${LCE_PG_DATA_DIR:-./.cache/lce-postgres-data}:/var/lib/postgresql/data
+    ports:
+      - "${LCE_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U titan -d titan_bridge_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - lce-net
+
+  bridge:
+    build:
+      context: ./src/bridge
+      dockerfile: Dockerfile.dev
+    image: ${LCE_DEV_IMAGE:-lce-bridge-dev:elixir-1.16.2-dotnet-10.0}
+    container_name: lce-bridge-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "ecto://titan:titan_secret@postgres:5432/titan_bridge_dev"
+      MIX_ENV: dev
+      LCE_HTTP_PORT: "${LCE_PORT:-4000}"
+      CLOAK_KEY: "${CLOAK_KEY:-}"
+      LCE_HOST_ALIAS: host.docker.internal
+      LCE_ROOT_DIR: /workspace
+      LCE_ZEBRA_DIR: /zebra_v1
+      LCE_RFID_DIR: /rfid
+      LCE_CHILDREN_TARGET: "${LCE_CHILDREN_TARGET:-zebra}"
+      LCE_CHILDREN_MODE: on
+      LCE_ZEBRA_PORT: "${ZEBRA_WEB_PORT:-18000}"
+      LCE_RFID_PORT: "${RFID_WEB_PORT:-8787}"
+      ZEBRA_AUTOPRINT_ENABLED: "${ZEBRA_AUTOPRINT_ENABLED:-0}"
+      ZEBRA_FEED_AFTER_ENCODE: "${ZEBRA_FEED_AFTER_ENCODE:-0}"
+      ZEBRA_SCALE_PORT: "${ZEBRA_SCALE_PORT:-}"
+      ZEBRA_SCALE_SIMULATE: "${ZEBRA_SCALE_SIMULATE:-}"
+      ZEBRA_PRINTER_SIMULATE: "${ZEBRA_PRINTER_SIMULATE:-}"
+      ZEBRA_WEB_NO_BUILD: "${ZEBRA_WEB_NO_BUILD:-1}"
+      LCE_CORE_TOKEN: "${LCE_CORE_TOKEN:-}"
+    volumes:
+      - ${LCE_WORK_DIR:-.}:/workspace
+      - ./src/bridge:/app
+      - ${LCE_MIX_CACHE_DIR:-./.cache/lce-mix}:/root/.mix
+      - ${LCE_BUILD_CACHE_DIR:-./.cache/lce-build}:/app/_build
+      - ${LCE_DEPS_CACHE_DIR:-./.cache/lce-deps}:/app/deps
+      - ${LCE_ZEBRA_HOST_DIR:-./ERPNext_Zebra_stabil_enterprise_version}:/zebra_v1
+      - ${LCE_RFID_HOST_DIR:-./ERPNext_UHFReader288_integration}:/rfid
+      - /dev:/dev
+    ports:
+      - "${LCE_PORT:-4000}:4000"
+      - "${ZEBRA_WEB_PORT:-18000}:${ZEBRA_WEB_PORT:-18000}"
+      - "${RFID_WEB_PORT:-8787}:${RFID_WEB_PORT:-8787}"
+    privileged: ${LCE_DOCKER_PRIVILEGED:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    working_dir: /app
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        if [ -d /app/_image_deps ] && [ ! -f /app/deps/.seeded ]; then
+          cp -an /app/_image_deps/. /app/deps/ 2>/dev/null || true
+          touch /app/deps/.seeded
+        fi
+        if [ -d /app/_image_build ] && [ ! -f /app/_build/.seeded ]; then
+          cp -an /app/_image_build/. /app/_build/ 2>/dev/null || true
+          touch /app/_build/.seeded
+        fi
+        if ! ls /root/.mix/archives/hex-* >/dev/null 2>&1; then mix local.hex --force; fi
+        if ! ls /root/.mix/elixir/*/rebar3 >/dev/null 2>&1; then mix local.rebar --force; fi
+        if [ ! -f deps/.deps_fetched ] || ! diff -q /app/mix.lock /app/deps/.mix.lock.cached >/dev/null 2>&1; then
+          mix deps.get
+          cp /app/mix.lock /app/deps/.mix.lock.cached
+          touch /app/deps/.deps_fetched
+        fi
+        mix ecto.create || true
+        mix ecto.migrate
+        mix run --no-halt
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${LCE_PORT:-4000}/api/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+    networks:
+      - lce-net
+
+  core-agent:
+    image: ${LCE_DEV_IMAGE:-lce-bridge-dev:elixir-1.16.2-dotnet-10.0}
+    container_name: lce-core-agent-dev
+    depends_on:
+      bridge:
+        condition: service_healthy
+    environment:
+      CORE_WS_URL: "ws://bridge:${LCE_PORT:-4000}/ws/core"
+      CORE_DEVICE_ID: "${CORE_DEVICE_ID:-CORE-01}"
+      LCE_API_BASE: "http://bridge:${LCE_PORT:-4000}"
+      LCE_CORE_TOKEN: "${LCE_CORE_TOKEN:-}"
+      CORE_PG_URL: "Host=postgres;Port=5432;Database=titan_bridge_dev;Username=titan;Password=titan_secret;Pooling=true"
+      CORE_PG_SCHEMA: "${CORE_PG_SCHEMA:-core_cache}"
+      CORE_RFID_ENABLED: "${CORE_RFID_ENABLED:-0}"
+      ZEBRA_URL: "http://bridge:${ZEBRA_WEB_PORT:-18000}"
+      RFID_URL: "http://bridge:${RFID_WEB_PORT:-8787}"
+    volumes:
+      - ./src/core_agent:/agent
+      - ${LCE_NUGET_CACHE_DIR:-./.cache/lce-nuget}:/root/.nuget/packages
+      - /dev:/dev
+    working_dir: /agent
+    command:
+      - bash
+      - -lc
+      - dotnet run
+    privileged: ${LCE_DOCKER_PRIVILEGED:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - lce-net
+
+networks:
+  lce-net:
+    driver: bridge
