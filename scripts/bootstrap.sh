@@ -31,7 +31,7 @@ CHECK_ONLY=0
 DRY_RUN=0
 ASSUME_YES=0
 
-for arg in "${@:-}"; do
+for arg in "$@"; do
   case "${arg}" in
     --check) CHECK_ONLY=1 ;;
     --dry-run) DRY_RUN=1 ;;
@@ -224,4 +224,3 @@ main() {
 }
 
 main "$@"
-

@@ -53,6 +53,21 @@ zebra_env =
     port = String.trim(port)
     if port != "", do: env ++ [{"ZEBRA_SCALE_PORT", port}], else: env
   end)
+  |> then(fn env ->
+    simulate = System.get_env("ZEBRA_SCALE_SIMULATE") || ""
+    simulate = String.trim(simulate)
+    if simulate != "", do: env ++ [{"ZEBRA_SCALE_SIMULATE", simulate}], else: env
+  end)
+  |> then(fn env ->
+    printer_sim = System.get_env("ZEBRA_PRINTER_SIMULATE") || ""
+    printer_sim = String.trim(printer_sim)
+    if printer_sim != "", do: env ++ [{"ZEBRA_PRINTER_SIMULATE", printer_sim}], else: env
+  end)
+  |> then(fn env ->
+    no_build = System.get_env("ZEBRA_WEB_NO_BUILD") || ""
+    no_build = String.trim(no_build)
+    if no_build != "", do: env ++ [{"ZEBRA_WEB_NO_BUILD", no_build}], else: env
+  end)
 
 children = [
   # Zebra label printer bridge (C#/.NET)

@@ -1024,6 +1024,12 @@ start_lce_docker() {
     --restart no
   )
 
+  if [[ -n "${ZEBRA_SCALE_SIMULATE:-}" ]]; then
+    docker_args+=( -e ZEBRA_SCALE_SIMULATE="${ZEBRA_SCALE_SIMULATE}" )
+    # Simulate rejimida Zebra child app rebuild kerak (yangi kod ishlashi uchun)
+    docker_args+=( -e ZEBRA_WEB_NO_BUILD=0 )
+  fi
+
   if [[ -n "${ZEBRA_SCALE_PORT:-}" ]]; then
     docker_args+=( -e ZEBRA_SCALE_PORT="${ZEBRA_SCALE_PORT}" )
     # External fake-scale simulators often expose a stable symlink in /tmp.

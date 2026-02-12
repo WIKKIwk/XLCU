@@ -830,7 +830,13 @@ defmodule TitanBridge.Telegram.Bot do
               )
             end
           else
-            if print_ok, do: increment_batch_count(chat_id)
+            if print_ok do
+              increment_batch_count(chat_id)
+              count = get_temp(chat_id, "batch_count") || 0
+              item_text = "🖨 #{count}-chi item print qilindi\n#{result_text}"
+              Task.start(fn -> send_message(token, chat_id, item_text) end)
+            end
+
             maybe_continue_batch(token, chat_id, product_id, result_text)
           end
       end
