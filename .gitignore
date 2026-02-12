@@ -23,10 +23,12 @@ ERPNext_UHFReader288_integration/
 
 # Secrets & tokens
 .env
+.env.run
 .tg_token
 .tg_token.invalid*
 .cache/
 logs/
+support/
 *.pem
 *.key
 

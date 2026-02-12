@@ -12,6 +12,85 @@ else
   WORK_DIR="${LCE_DIR}"
 fi
 WORK_DIR="${LCE_WORK_DIR:-${WORK_DIR}}"
+LCE_PORT="${LCE_PORT:-4000}"
+ZEBRA_WEB_PORT="${ZEBRA_WEB_PORT:-18000}"
+RFID_WEB_PORT="${RFID_WEB_PORT:-8787}"
+LCE_POSTGRES_PORT="${LCE_POSTGRES_PORT:-5432}"
+
+find_listen_pid() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lptn "( sport = :${port} )" 2>/dev/null | awk -F'pid=' 'NR>1 && $2 { split($2, a, ","); print a[1]; exit }'
+    return
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true
+    return
+  fi
+  echo ""
+}
+
+docker_uses_port() {
+  local port="$1"
+  docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -Eq "(^|[[:space:]])[^[:space:]]+[[:space:]].*(:|:::|0\\.0\\.0\\.0:)${port}->"
+}
+
+check_port_conflict() {
+  local port="$1"
+  local name="$2"
+  local pid
+  pid="$(find_listen_pid "${port}")"
+  if [[ -z "${pid}" ]]; then
+    return 0
+  fi
+
+  if command -v docker >/dev/null 2>&1 && docker_uses_port "${port}"; then
+    echo "INFO: Port ${port} (${name}) docker container tomonidan band (ok)."
+    return 0
+  fi
+
+  local proc
+  proc="$(ps -p "${pid}" -o comm= 2>/dev/null | xargs || true)"
+  echo "ERROR: Port ${port} (${name}) band: pid=${pid} proc=${proc:-unknown}" >&2
+  echo "TIP: Jarayonni to'xtating yoki boshqa port bering (LCE_PORT/ZEBRA_WEB_PORT/RFID_WEB_PORT/LCE_POSTGRES_PORT)." >&2
+  exit 1
+}
+
+docker_rootless() {
+  local rootless=""
+  rootless="$(docker info --format '{{.Rootless}}' 2>/dev/null || true)"
+  if [[ "${rootless}" == "true" ]]; then
+    return 0
+  fi
+  if [[ "${rootless}" == "false" ]]; then
+    return 1
+  fi
+  local sec=""
+  sec="$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null || true)"
+  [[ "${sec}" == *rootless* ]]
+}
+
+check_device_access() {
+  local any=0
+  local warn=0
+  local dev=""
+  for dev in /dev/ttyUSB* /dev/ttyACM* /dev/usb/lp*; do
+    [[ -e "${dev}" ]] || continue
+    any=1
+    if [[ ! -r "${dev}" || ! -w "${dev}" ]]; then
+      echo "WARNING: Device access cheklangan: ${dev} (rw kerak)" >&2
+      warn=1
+    fi
+  done
+
+  if [[ "${any}" -eq 0 ]]; then
+    echo "INFO: /dev/ttyUSB*, /dev/ttyACM*, /dev/usb/lp* qurilmalar topilmadi."
+  elif [[ "${warn}" -eq 1 ]]; then
+    echo "TIP: foydalanuvchini mos guruhlarga qo'shing (odatda: dialout, lp) va qayta login qiling." >&2
+  else
+    echo "Device access: OK"
+  fi
+}
 
 detect_child_dirs() {
   ZEBRA_DIR="${LCE_ZEBRA_HOST_DIR:-}"
@@ -105,6 +184,11 @@ if ! bash -n "${LCE_DIR}/scripts/run_extensions.sh"; then
   exit 1
 fi
 
+if ! bash -n "${LCE_DIR}/scripts/run_extensions_compose.sh"; then
+  echo "ERROR: scripts/run_extensions_compose.sh has a syntax error." >&2
+  exit 1
+fi
+
 if ! command -v git >/dev/null 2>&1; then
   echo "WARNING: git not found. Auto-download of child repos will not work." >&2
   echo "TIP: make bootstrap" >&2
@@ -127,6 +211,27 @@ else
     exit 1
   fi
 fi
+
+if docker compose version >/dev/null 2>&1; then
+  echo "Docker Compose: OK (docker compose)"
+elif command -v docker-compose >/dev/null 2>&1; then
+  echo "Docker Compose: OK (docker-compose)"
+else
+  echo "ERROR: Docker Compose not found (docker compose / docker-compose)." >&2
+  echo "TIP: make bootstrap" >&2
+  exit 1
+fi
+
+if docker_rootless; then
+  echo "WARNING: Docker rootless rejimi aniqlandi. Hardware mapping (USB/serial/printer) barqaror bo'lmasligi mumkin." >&2
+fi
+
+check_port_conflict "${LCE_PORT}" "bridge"
+check_port_conflict "${ZEBRA_WEB_PORT}" "zebra"
+check_port_conflict "${RFID_WEB_PORT}" "rfid"
+check_port_conflict "${LCE_POSTGRES_PORT}" "postgres"
+
+check_device_access
 
 DOCKERFILE_DEV="${LCE_DEV_DOCKERFILE:-${LCE_DIR}/src/bridge/Dockerfile.dev}"
 if [[ -f "${DOCKERFILE_DEV}" ]]; then
