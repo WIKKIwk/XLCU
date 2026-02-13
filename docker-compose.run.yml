@@ -23,7 +23,8 @@ services:
     build:
       context: ./src/bridge
       dockerfile: Dockerfile.dev
-    image: ${LCE_DEV_IMAGE:-lce-bridge-dev:elixir-1.16.2-dotnet-10.0}
+      target: ${LCE_BRIDGE_IMAGE_TARGET:-bridge-all}
+    image: ${LCE_DEV_IMAGE:-lce-bridge-dev:bridge-all}
     container_name: lce-bridge-dev
     depends_on:
       postgres:
@@ -41,6 +42,7 @@ services:
       LCE_CHILDREN_MODE: on
       LCE_ZEBRA_PORT: "${ZEBRA_WEB_PORT:-18000}"
       LCE_RFID_PORT: "${RFID_WEB_PORT:-8787}"
+      RFID_SCAN_SUBNETS: "${RFID_SCAN_SUBNETS:-}"
       ZEBRA_AUTOPRINT_ENABLED: "${ZEBRA_AUTOPRINT_ENABLED:-0}"
       ZEBRA_FEED_AFTER_ENCODE: "${ZEBRA_FEED_AFTER_ENCODE:-0}"
       ZEBRA_SCALE_PORT: "${ZEBRA_SCALE_PORT:-}"
@@ -48,12 +50,18 @@ services:
       ZEBRA_PRINTER_SIMULATE: "${ZEBRA_PRINTER_SIMULATE:-}"
       ZEBRA_WEB_NO_BUILD: "${ZEBRA_WEB_NO_BUILD:-1}"
       LCE_CORE_TOKEN: "${LCE_CORE_TOKEN:-}"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+      DOTNET_NOLOGO: "1"
+      NUGET_XMLDOC_MODE: "skip"
+      NUGET_PACKAGES: "/root/.nuget/packages"
     volumes:
       - ${LCE_WORK_DIR:-.}:/workspace
       - ./src/bridge:/app
       - ${LCE_MIX_CACHE_DIR:-./.cache/lce-mix}:/root/.mix
       - ${LCE_BUILD_CACHE_DIR:-./.cache/lce-build}:/app/_build
       - ${LCE_DEPS_CACHE_DIR:-./.cache/lce-deps}:/app/deps
+      - ${LCE_BRIDGE_NUGET_CACHE_DIR:-./.cache/lce-bridge-nuget}:/root/.nuget/packages
       - ${LCE_ZEBRA_HOST_DIR:-./ERPNext_Zebra_stabil_enterprise_version}:/zebra_v1
       - ${LCE_RFID_HOST_DIR:-./ERPNext_UHFReader288_integration}:/rfid
       - /dev:/dev
@@ -98,7 +106,7 @@ services:
       - lce-net
 
   core-agent:
-    image: ${LCE_DEV_IMAGE:-lce-bridge-dev:elixir-1.16.2-dotnet-10.0}
+    image: ${LCE_CORE_IMAGE:-mcr.microsoft.com/dotnet/sdk:10.0}
     container_name: lce-core-agent-dev
     depends_on:
       bridge:
@@ -113,15 +121,51 @@ services:
       CORE_RFID_ENABLED: "${CORE_RFID_ENABLED:-0}"
       ZEBRA_URL: "http://bridge:${ZEBRA_WEB_PORT:-18000}"
       RFID_URL: "http://bridge:${RFID_WEB_PORT:-8787}"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+      NUGET_XMLDOC_MODE: "skip"
     volumes:
       - ./src/core_agent:/agent
       - ${LCE_NUGET_CACHE_DIR:-./.cache/lce-nuget}:/root/.nuget/packages
+      - ${LCE_CORE_PUBLISH_CACHE_DIR:-./.cache/lce-core-publish}:/cache/publish
       - /dev:/dev
     working_dir: /agent
     command:
       - bash
       - -lc
-      - dotnet run
+      - |
+        set -euo pipefail
+        PROJECT=/agent/CoreAgent.csproj
+        PUBLISH_DIR=/cache/publish
+        HASH_FILE="$${PUBLISH_DIR}/.source.hash"
+
+        mkdir -p "$${PUBLISH_DIR}"
+
+        # Re-publish only when core-agent source/csproj changes.
+        CURRENT_HASH="$(
+          find /agent -type f \( -name '*.cs' -o -name '*.csproj' -o -name '*.props' -o -name '*.targets' \) -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sha256sum \
+            | awk '{print $1}'
+        )"
+
+        NEED_PUBLISH=1
+        if [[ -f "$${PUBLISH_DIR}/CoreAgent.dll" ]] && [[ -f "$${HASH_FILE}" ]]; then
+          if [[ "$(cat "$${HASH_FILE}")" == "$${CURRENT_HASH}" ]]; then
+            NEED_PUBLISH=0
+          fi
+        fi
+
+        if [[ "$${NEED_PUBLISH}" -eq 1 ]]; then
+          echo "core-agent publish (cache miss)"
+          dotnet publish "$${PROJECT}" -c Release -o "$${PUBLISH_DIR}" /p:UseAppHost=false
+          printf '%s' "$${CURRENT_HASH}" > "$${HASH_FILE}"
+        else
+          echo "core-agent publish cache hit"
+        fi
+
+        exec dotnet "$${PUBLISH_DIR}/CoreAgent.dll"
     privileged: ${LCE_DOCKER_PRIVILEGED:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"

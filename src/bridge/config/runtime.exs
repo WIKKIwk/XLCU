@@ -46,8 +46,17 @@ zebra_env =
     {"XDG_CACHE_HOME", Path.join(zebra_dir, ".cache")},
     {"ZEBRA_WEB_HOST", zebra_host},
     {"ZEBRA_WEB_PORT", zebra_port},
-    {"ZEBRA_NO_TUI", "1"}
+    {"ZEBRA_NO_TUI", "1"},
+    {"DOTNET_CLI_TELEMETRY_OPTOUT", "1"},
+    {"DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1"},
+    {"DOTNET_NOLOGO", "1"},
+    {"NUGET_XMLDOC_MODE", "skip"}
   ]
+  |> then(fn env ->
+    nuget = System.get_env("NUGET_PACKAGES") || ""
+    nuget = String.trim(nuget)
+    if nuget != "", do: env ++ [{"NUGET_PACKAGES", nuget}], else: env
+  end)
   |> then(fn env ->
     port = System.get_env("ZEBRA_SCALE_PORT") || ""
     port = String.trim(port)

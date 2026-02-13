@@ -140,7 +140,13 @@ Eslatma: `make bootstrap` sizni `docker` group'ga qo'shishi mumkin. Shundan keyi
 
 - `postgres` (`lce-postgres-dev`)
 - `bridge` (`lce-bridge-dev`)
-- `core-agent` (`lce-core-agent-dev`)
+- `core-agent` (`lce-core-agent-dev`, default: `zebra/all` uchun yoqiladi, `rfid` uchun `auto` rejimda o'chadi)
+
+`make run` endi targetga qarab faqat kerakli bridge texnologiyalarini build qiladi:
+
+- `zebra` -> `bridge-zebra` (.NET + USB helperlar)
+- `rfid` -> `bridge-rfid` (Node.js + Java)
+- `all` -> `bridge-all` (.NET + Node.js + Java)
 
 USB/Serial (printer/RFID/scale) bilan ishlash kerak bo'lsa `--privileged` rejimni yoqib ishlating:
 
@@ -170,9 +176,45 @@ Prebuilt dev image ishlatish (mahalliy build farqlarini kamaytirish):
 
 ```bash
 LCE_USE_PREBUILT_DEV_IMAGE=1 \
-LCE_DEV_IMAGE=ghcr.io/<org>/xlcu-bridge-dev:elixir-1.16.2-dotnet-10.0 \
+LCE_DEV_IMAGE=ghcr.io/<org>/xlcu-bridge-dev:bridge-zebra \
 make run
 ```
+
+Core-agent'ni majburan yoqish/o'chirish:
+
+```bash
+# rfid uchun ham core-agent ko'tarish
+LCE_CHILDREN_TARGET=rfid LCE_ENABLE_CORE_AGENT=1 make run
+
+# zebra uchun core-agent'siz tezroq startup
+LCE_CHILDREN_TARGET=zebra LCE_ENABLE_CORE_AGENT=0 make run
+```
+
+Core-agent kutish rejimi (startup tezligi uchun):
+
+```bash
+# default: kutmaydi (tezroq "tayyor!" chiqadi)
+LCE_WAIT_CORE_READY=0 make run
+
+# to'liq tayyorlikni kutish kerak bo'lsa
+LCE_WAIT_CORE_READY=1 make run
+```
+
+Zebra TUI terminalda buzilib ko'rinsa:
+
+```bash
+# auto TUI o'chirish (stable)
+LCE_SHOW_ZEBRA_TUI=0 make run
+```
+
+Izoh: `make run` endi TUI ishga tushirganda `TERM/COLUMNS/LINES` ni container ichiga uzatadi; ko'p terminal muhitlarda shu bilan render barqarorlashadi.
+
+Low-spec qurilmalar uchun (mini-PC/Raspberry) qo'shimcha optimizatsiya:
+
+- `core-agent` endi `dotnet run` o'rniga publish-cache bilan ishlaydi (source o'zgarmasa qayta compile qilinmaydi).
+- cache papka: `.cache/lce-core-publish` (`LCE_CORE_PUBLISH_CACHE_DIR` bilan override qilish mumkin).
+- Zebra uchun NuGet cache ham persist qilinadi (`.cache/lce-bridge-nuget`), va `run.sh` fast-path `--no-restore` bilan ishga tushadi (fallback build saqlangan).
+- Bridge image build ham fingerprint bo'yicha cache qilinadi: source va `Dockerfile.dev` o'zgarmasa `docker build` skip qilinadi (`LCE_REBUILD_IMAGE=1` bilan majburan rebuild).
 
 USB ko'rinyaptimi tekshirish (container ichida):
 

@@ -21,11 +21,20 @@ ZEBRA_WEB_PORT="${ZEBRA_WEB_PORT:-18000}"
 RFID_WEB_PORT="${RFID_WEB_PORT:-8787}"
 LCE_WAIT_ATTEMPTS="${LCE_WAIT_ATTEMPTS:-120}"
 LCE_WAIT_DELAY="${LCE_WAIT_DELAY:-0.5}"
+LCE_CHILD_WAIT_ATTEMPTS="${LCE_CHILD_WAIT_ATTEMPTS:-240}"
+LCE_CHILD_WAIT_DELAY="${LCE_CHILD_WAIT_DELAY:-0.25}"
+LCE_FAIL_ON_CHILD_NOT_READY="${LCE_FAIL_ON_CHILD_NOT_READY:-1}"
 LCE_FORCE_RESTART="${LCE_FORCE_RESTART:-1}"
 LCE_AUTO_FETCH_CHILDREN="${LCE_AUTO_FETCH_CHILDREN:-1}"
 LCE_DRY_RUN="${LCE_DRY_RUN:-0}"
-LCE_DEV_IMAGE="${LCE_DEV_IMAGE:-lce-bridge-dev:elixir-1.16.2-dotnet-10.0}"
+LCE_DEV_IMAGE="${LCE_DEV_IMAGE:-}"
 LCE_USE_PREBUILT_DEV_IMAGE="${LCE_USE_PREBUILT_DEV_IMAGE:-0}"
+LCE_REBUILD_IMAGE="${LCE_REBUILD_IMAGE:-0}"
+LCE_BRIDGE_IMAGE_TARGET="${LCE_BRIDGE_IMAGE_TARGET:-}"
+LCE_ALLOW_TARGET_MISMATCH="${LCE_ALLOW_TARGET_MISMATCH:-0}"
+LCE_CORE_IMAGE="${LCE_CORE_IMAGE:-mcr.microsoft.com/dotnet/sdk:10.0}"
+LCE_ENABLE_CORE_AGENT="${LCE_ENABLE_CORE_AGENT:-auto}"
+LCE_WAIT_CORE_READY="${LCE_WAIT_CORE_READY:-0}"
 LCE_SIM_MODE="${LCE_SIM_MODE:-0}"
 LCE_DOCKER_PRIVILEGED="${LCE_DOCKER_PRIVILEGED:-1}"
 LCE_DOCKER_HOST_NETWORK="${LCE_DOCKER_HOST_NETWORK:-0}"
@@ -33,6 +42,7 @@ LCE_ZEBRA_TUI_NO_BUILD="${LCE_ZEBRA_TUI_NO_BUILD:-1}"
 ZEBRA_AUTOPRINT_ENABLED="${ZEBRA_AUTOPRINT_ENABLED:-0}"
 ZEBRA_FEED_AFTER_ENCODE="${ZEBRA_FEED_AFTER_ENCODE:-0}"
 ZEBRA_PRINTER_SIMULATE="${ZEBRA_PRINTER_SIMULATE:-}"
+RFID_SCAN_SUBNETS="${RFID_SCAN_SUBNETS:-}"
 TG_TOKEN="${TG_TOKEN:-}"
 
 LCE_MIX_CACHE_DIR="${LCE_MIX_CACHE_DIR:-${WORK_DIR}/.cache/lce-mix}"
@@ -40,7 +50,14 @@ LCE_BUILD_CACHE_DIR="${LCE_BUILD_CACHE_DIR:-${WORK_DIR}/.cache/lce-build}"
 LCE_DEPS_CACHE_DIR="${LCE_DEPS_CACHE_DIR:-${WORK_DIR}/.cache/lce-deps}"
 LCE_PG_DATA_DIR="${LCE_PG_DATA_DIR:-${WORK_DIR}/.cache/lce-postgres-data}"
 LCE_NUGET_CACHE_DIR="${LCE_NUGET_CACHE_DIR:-${WORK_DIR}/.cache/lce-nuget}"
+LCE_BRIDGE_NUGET_CACHE_DIR="${LCE_BRIDGE_NUGET_CACHE_DIR:-${WORK_DIR}/.cache/lce-bridge-nuget}"
+LCE_CORE_PUBLISH_CACHE_DIR="${LCE_CORE_PUBLISH_CACHE_DIR:-${WORK_DIR}/.cache/lce-core-publish}"
+LCE_IMAGE_META_DIR="${LCE_IMAGE_META_DIR:-${WORK_DIR}/.cache/lce-image-meta}"
 LCE_CLOAK_KEY_FILE="${LCE_CLOAK_KEY_FILE:-${WORK_DIR}/.cache/lce-cloak.key}"
+LCE_DEV_IMAGE_USER_SET=0
+if [[ -n "${LCE_DEV_IMAGE}" ]]; then
+  LCE_DEV_IMAGE_USER_SET=1
+fi
 
 detect_zebra_dir() {
   local dir="${LCE_ZEBRA_HOST_DIR:-}"
@@ -161,6 +178,29 @@ python_bin() {
   return 1
 }
 
+detect_host_subnets() {
+  if ! command -v ip >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local out=""
+  out="$(
+    ip -o -4 addr show up scope global 2>/dev/null \
+      | awk '
+        {
+          iface = $2
+          cidr = $4
+          if (iface ~ /^(lo|docker[0-9]*|br-|veth|virbr|zt|tailscale|wg|tun)/) next
+          print cidr
+        }
+      ' \
+      | awk '!seen[$0]++' \
+      | paste -sd, -
+  )"
+
+  printf '%s' "${out}"
+}
+
 ensure_cloak_key() {
   if [[ -n "${CLOAK_KEY:-}" ]]; then
     return 0
@@ -242,6 +282,30 @@ wait_for_core_ready() {
   return 1
 }
 
+wait_for_children_ready() {
+  local attempts="${LCE_CHILD_WAIT_ATTEMPTS:-240}"
+  local delay="${LCE_CHILD_WAIT_DELAY:-0.25}"
+  local target="${LCE_CHILDREN_TARGET:-zebra}"
+  local target_lc="${target,,}"
+  local failed=0
+
+  if [[ "${target_lc}" == "all" || "${target_lc}" == *"zebra"* ]]; then
+    if ! wait_for_url "http://127.0.0.1:${ZEBRA_WEB_PORT}/api/v1/health" "${attempts}" "${delay}"; then
+      echo "WARNING: zebra endpoint hali tayyor emas (http://127.0.0.1:${ZEBRA_WEB_PORT}/api/v1/health)." >&2
+      failed=1
+    fi
+  fi
+
+  if [[ "${target_lc}" == "all" || "${target_lc}" == *"rfid"* ]]; then
+    if ! wait_for_url "http://127.0.0.1:${RFID_WEB_PORT}/" "${attempts}" "${delay}"; then
+      echo "WARNING: rfid endpoint hali tayyor emas (http://127.0.0.1:${RFID_WEB_PORT}/)." >&2
+      failed=1
+    fi
+  fi
+
+  return "${failed}"
+}
+
 post_config() {
   local telegram_token="$1"
   local zebra_url="$2"
@@ -307,6 +371,116 @@ compose() {
   "${COMPOSE_CMD[@]}" "$@"
 }
 
+has_buildx() {
+  docker buildx version >/dev/null 2>&1
+}
+
+filter_legacy_builder_warning() {
+  sed \
+    -e '/^DEPRECATED: The legacy builder is deprecated and will be removed in a future release\.$/d' \
+    -e '/^            Install the buildx component to build images with BuildKit:$/d' \
+    -e '/^            https:\/\/docs.docker.com\/go\/buildx\/$/d'
+}
+
+sha256_of_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+    return 0
+  fi
+  openssl dgst -sha256 | awk '{print $NF}'
+}
+
+sha256_of_file() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${file}" | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${file}" | awk '{print $1}'
+    return 0
+  fi
+  openssl dgst -sha256 "${file}" | awk '{print $NF}'
+}
+
+bridge_image_fingerprint() {
+  local bridge_dir="${LCE_DIR}/src/bridge"
+  local files=(
+    "Dockerfile.dev"
+    "mix.exs"
+    "mix.lock"
+    "config/config.exs"
+    "config/dev.exs"
+  )
+
+  {
+    printf 'target=%s\n' "${LCE_BRIDGE_IMAGE_TARGET}"
+    for rel in "${files[@]}"; do
+      local path="${bridge_dir}/${rel}"
+      if [[ -f "${path}" ]]; then
+        printf '%s=%s\n' "${rel}" "$(sha256_of_file "${path}")"
+      else
+        printf '%s=missing\n' "${rel}"
+      fi
+    done
+  } | sha256_of_stdin
+}
+
+bridge_image_fingerprint_file() {
+  local key
+  key="$(printf '%s|%s' "${LCE_DEV_IMAGE}" "${LCE_BRIDGE_IMAGE_TARGET}" | sha256_of_stdin)"
+  printf '%s/%s.fingerprint' "${LCE_IMAGE_META_DIR}" "${key}"
+}
+
+build_local_dev_image() {
+  local bridge_dir="${LCE_DIR}/src/bridge"
+  local dockerfile="${bridge_dir}/Dockerfile.dev"
+  local fp_file=""
+  local current_fp=""
+  local cached_fp=""
+
+  if [[ ! -f "${dockerfile}" ]]; then
+    echo "ERROR: Dockerfile topilmadi: ${dockerfile}" >&2
+    exit 1
+  fi
+
+  mkdir -p "${LCE_IMAGE_META_DIR}"
+  fp_file="$(bridge_image_fingerprint_file)"
+  current_fp="$(bridge_image_fingerprint)"
+
+  if ! as_bool "${LCE_REBUILD_IMAGE}" && docker image inspect "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
+    if [[ -f "${fp_file}" ]]; then
+      cached_fp="$(cat "${fp_file}" 2>/dev/null || true)"
+      cached_fp="$(trim_token "${cached_fp}")"
+      if [[ -n "${cached_fp}" ]] && [[ "${cached_fp}" == "${current_fp}" ]]; then
+        echo "Local dev image build: cache hit, skip (${LCE_DEV_IMAGE}, target=${LCE_BRIDGE_IMAGE_TARGET})"
+        return 0
+      fi
+    fi
+  fi
+
+  echo "Local dev image build: ${LCE_DEV_IMAGE} (target=${LCE_BRIDGE_IMAGE_TARGET})"
+  if has_buildx; then
+    if ! DOCKER_BUILDKIT=1 docker build --target "${LCE_BRIDGE_IMAGE_TARGET}" -t "${LCE_DEV_IMAGE}" -f "${dockerfile}" "${bridge_dir}"; then
+      echo "ERROR: local image build failed: ${LCE_DEV_IMAGE}" >&2
+      exit 1
+    fi
+    printf '%s' "${current_fp}" > "${fp_file}"
+    return 0
+  fi
+
+  if ! DOCKER_BUILDKIT=0 docker build --target "${LCE_BRIDGE_IMAGE_TARGET}" -t "${LCE_DEV_IMAGE}" -f "${dockerfile}" "${bridge_dir}" \
+    2> >(filter_legacy_builder_warning >&2); then
+    echo "ERROR: local image build failed: ${LCE_DEV_IMAGE}" >&2
+    exit 1
+  fi
+  printf '%s' "${current_fp}" > "${fp_file}"
+}
+
 as_bool() {
   local raw="${1:-0}"
   case "${raw,,}" in
@@ -315,18 +489,66 @@ as_bool() {
   esac
 }
 
+core_agent_enabled() {
+  local mode="${LCE_ENABLE_CORE_AGENT:-auto}"
+  case "${mode,,}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    auto)
+      if [[ "${LCE_CHILDREN_TARGET}" == "rfid" ]]; then
+        return 1
+      fi
+      return 0
+      ;;
+    *)
+      echo "ERROR: LCE_ENABLE_CORE_AGENT must be one of: auto, 0, 1" >&2
+      exit 1
+      ;;
+  esac
+}
+
 start_zebra_tui() {
   if [[ ! -t 0 || ! -t 1 ]]; then
     return 1
   fi
 
+  local cols="${COLUMNS:-}"
+  local lines="${LINES:-}"
+  local term_value="${TERM:-xterm-256color}"
+  if [[ -z "${term_value}" || "${term_value}" == "dumb" ]]; then
+    term_value="xterm-256color"
+  fi
+  local colorterm_value="${COLORTERM:-}"
+  local stty_size=""
+  if [[ -z "${cols}" || -z "${lines}" ]] && stty_size="$(stty size 2>/dev/null || true)"; then
+    if [[ "${stty_size}" =~ ^[[:space:]]*([0-9]+)[[:space:]]+([0-9]+)[[:space:]]*$ ]]; then
+      lines="${lines:-${BASH_REMATCH[1]}}"
+      cols="${cols:-${BASH_REMATCH[2]}}"
+    fi
+  fi
+
+  local -a exec_opts
+  exec_opts=(-it -e "TERM=${term_value}")
+  if [[ -n "${cols}" ]]; then
+    exec_opts+=(-e "COLUMNS=${cols}")
+  fi
+  if [[ -n "${lines}" ]]; then
+    exec_opts+=(-e "LINES=${lines}")
+  fi
+  if [[ -n "${colorterm_value}" ]]; then
+    exec_opts+=(-e "COLORTERM=${colorterm_value}")
+  fi
+
+  # Keep terminal state sane after full-screen ANSI UI exits.
+  trap 'stty sane 2>/dev/null || true; printf "\033[0m" 2>/dev/null || true' RETURN
+
   if [[ "${LCE_ZEBRA_TUI_NO_BUILD}" == "1" ]]; then
-    if compose exec -it bridge bash -lc "cd /zebra_v1 && env CLI_NO_BUILD=1 ./cli.sh tui --url \"http://127.0.0.1:${ZEBRA_WEB_PORT}\""; then
+    if compose exec "${exec_opts[@]}" bridge bash -lc "stty cols \"\${COLUMNS:-80}\" rows \"\${LINES:-24}\" >/dev/null 2>&1 || true; cd /zebra_v1 && env CLI_NO_BUILD=1 ./cli.sh tui --url \"http://127.0.0.1:${ZEBRA_WEB_PORT}\""; then
       return 0
     fi
   fi
 
-  compose exec -it bridge bash -lc "cd /zebra_v1 && ./cli.sh tui --url \"http://127.0.0.1:${ZEBRA_WEB_PORT}\""
+  compose exec "${exec_opts[@]}" bridge bash -lc "stty cols \"\${COLUMNS:-80}\" rows \"\${LINES:-24}\" >/dev/null 2>&1 || true; cd /zebra_v1 && ./cli.sh tui --url \"http://127.0.0.1:${ZEBRA_WEB_PORT}\""
 }
 
 ZEBRA_DIR="$(detect_zebra_dir)"
@@ -347,7 +569,9 @@ if [[ -z "${LCE_CHILDREN_TARGET:-}" ]]; then
       2) LCE_CHILDREN_TARGET="rfid" ;;
       1|"")
         LCE_CHILDREN_TARGET="zebra"
-        LCE_SHOW_ZEBRA_TUI="1"
+        if [[ -z "${LCE_SHOW_ZEBRA_TUI:-}" ]]; then
+          LCE_SHOW_ZEBRA_TUI="1"
+        fi
         ;;
       *)
         echo "ERROR: invalid choice." >&2
@@ -413,6 +637,45 @@ if [[ "${need_rfid}" -eq 1 ]] && [[ -z "${RFID_DIR}" || ! -d "${RFID_DIR}" || ! 
   exit 1
 fi
 
+EXPECTED_BRIDGE_IMAGE_TARGET="bridge-all"
+case "${LCE_CHILDREN_TARGET}" in
+  zebra) EXPECTED_BRIDGE_IMAGE_TARGET="bridge-zebra" ;;
+  rfid) EXPECTED_BRIDGE_IMAGE_TARGET="bridge-rfid" ;;
+  *) EXPECTED_BRIDGE_IMAGE_TARGET="bridge-all" ;;
+esac
+
+if [[ -z "${LCE_BRIDGE_IMAGE_TARGET}" ]]; then
+  LCE_BRIDGE_IMAGE_TARGET="${EXPECTED_BRIDGE_IMAGE_TARGET}"
+elif [[ "${LCE_BRIDGE_IMAGE_TARGET}" != "${EXPECTED_BRIDGE_IMAGE_TARGET}" ]]; then
+  if as_bool "${LCE_ALLOW_TARGET_MISMATCH}"; then
+    echo "WARNING: target mismatch allowed (child=${LCE_CHILDREN_TARGET}, image_target=${LCE_BRIDGE_IMAGE_TARGET})." >&2
+  else
+    echo "WARNING: image target child tanloviga mos emas (${LCE_BRIDGE_IMAGE_TARGET} -> ${EXPECTED_BRIDGE_IMAGE_TARGET}); avtomatik tuzatildi." >&2
+    LCE_BRIDGE_IMAGE_TARGET="${EXPECTED_BRIDGE_IMAGE_TARGET}"
+  fi
+fi
+
+case "${LCE_BRIDGE_IMAGE_TARGET}" in
+  bridge-zebra|bridge-rfid|bridge-all) ;;
+  *)
+    echo "ERROR: LCE_BRIDGE_IMAGE_TARGET must be one of: bridge-zebra, bridge-rfid, bridge-all" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
+  LCE_DEV_IMAGE="lce-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET}"
+fi
+
+LCE_START_CORE_AGENT=0
+if core_agent_enabled; then
+  LCE_START_CORE_AGENT=1
+fi
+DRY_SERVICES="postgres bridge"
+if [[ "${LCE_START_CORE_AGENT}" -eq 1 ]]; then
+  DRY_SERVICES+=" core-agent"
+fi
+
 LCE_TOKEN_FILE="${LCE_TOKEN_FILE:-${LCE_DIR}/.tg_token}"
 SAVED_TOKEN=""
 if [[ -f "${LCE_TOKEN_FILE}" ]]; then
@@ -470,7 +733,10 @@ mkdir -p \
   "${LCE_BUILD_CACHE_DIR}" \
   "${LCE_DEPS_CACHE_DIR}" \
   "${LCE_PG_DATA_DIR}" \
-  "${LCE_NUGET_CACHE_DIR}"
+  "${LCE_NUGET_CACHE_DIR}" \
+  "${LCE_BRIDGE_NUGET_CACHE_DIR}" \
+  "${LCE_CORE_PUBLISH_CACHE_DIR}" \
+  "${LCE_IMAGE_META_DIR}"
 
 EMPTY_ZEBRA_DIR="${WORK_DIR}/.cache/empty-zebra"
 EMPTY_RFID_DIR="${WORK_DIR}/.cache/empty-rfid"
@@ -500,17 +766,24 @@ if as_bool "${LCE_SIM_MODE}"; then
   fi
 fi
 
+if [[ -z "${RFID_SCAN_SUBNETS}" ]]; then
+  RFID_SCAN_SUBNETS="$(detect_host_subnets)"
+fi
+
 LCE_DOCKER_PRIVILEGED="$(to_compose_bool "${LCE_DOCKER_PRIVILEGED}")"
 export LCE_DOCKER_PRIVILEGED
 export LCE_DEV_IMAGE
+export LCE_BRIDGE_IMAGE_TARGET
+export LCE_CORE_IMAGE
 export LCE_PORT ZEBRA_WEB_PORT RFID_WEB_PORT
 export LCE_WORK_DIR
-export LCE_MIX_CACHE_DIR LCE_BUILD_CACHE_DIR LCE_DEPS_CACHE_DIR LCE_PG_DATA_DIR LCE_NUGET_CACHE_DIR
+export LCE_MIX_CACHE_DIR LCE_BUILD_CACHE_DIR LCE_DEPS_CACHE_DIR LCE_PG_DATA_DIR LCE_NUGET_CACHE_DIR LCE_BRIDGE_NUGET_CACHE_DIR LCE_CORE_PUBLISH_CACHE_DIR
 export LCE_CHILDREN_TARGET
 export LCE_ZEBRA_HOST_DIR="${ZEBRA_DIR}"
 export LCE_RFID_HOST_DIR="${RFID_DIR}"
 export ZEBRA_AUTOPRINT_ENABLED ZEBRA_FEED_AFTER_ENCODE
 export ZEBRA_PRINTER_SIMULATE
+export RFID_SCAN_SUBNETS
 export CORE_RFID_ENABLED
 
 ensure_cloak_key
@@ -522,9 +795,19 @@ if [[ "${LCE_DRY_RUN}" == "1" ]]; then
   echo "ZEBRA_DIR: ${ZEBRA_DIR}"
   echo "RFID_DIR:  ${RFID_DIR}"
   echo "SIM_MODE:  ${LCE_SIM_MODE}"
+  echo "CORE:      ${LCE_START_CORE_AGENT} (mode=${LCE_ENABLE_CORE_AGENT})"
+  echo "CORE_WAIT: ${LCE_WAIT_CORE_READY}"
+  echo "CHILD_WAIT:${LCE_CHILD_WAIT_ATTEMPTS} x ${LCE_CHILD_WAIT_DELAY}s (fail=${LCE_FAIL_ON_CHILD_NOT_READY})"
+  echo "SERVICES:  ${DRY_SERVICES}"
+  echo "REBUILD:   ${LCE_REBUILD_IMAGE}"
   echo "PREBUILT:  ${LCE_USE_PREBUILT_DEV_IMAGE}"
-  echo "IMAGE:     ${LCE_DEV_IMAGE}"
+  echo "IMAGE:     ${LCE_DEV_IMAGE} (target=${LCE_BRIDGE_IMAGE_TARGET})"
+  echo "CORE_IMG:  ${LCE_CORE_IMAGE}"
+  echo "BR_NUGET:  ${LCE_BRIDGE_NUGET_CACHE_DIR}"
+  echo "CORE_PUB:  ${LCE_CORE_PUBLISH_CACHE_DIR}"
+  echo "IMG_META:  ${LCE_IMAGE_META_DIR}"
   echo "PORTS:     bridge=${LCE_PORT} zebra=${ZEBRA_WEB_PORT} rfid=${RFID_WEB_PORT}"
+  echo "RFID_SCAN_SUBNETS: ${RFID_SCAN_SUBNETS:-<empty>}"
   exit 0
 fi
 
@@ -539,6 +822,11 @@ if [[ "${LCE_FORCE_RESTART}" == "1" ]]; then
   docker rm -f lce-core-agent-dev lce-bridge-dev lce-postgres-dev >/dev/null 2>&1 || true
 fi
 
+SERVICES=(postgres bridge)
+if [[ "${LCE_START_CORE_AGENT}" -eq 1 ]]; then
+  SERVICES+=(core-agent)
+fi
+
 if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}"; then
   if ! docker image inspect "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
     if ! docker pull "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
@@ -547,9 +835,10 @@ if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}"; then
       exit 1
     fi
   fi
-  compose up -d --no-build postgres bridge core-agent
+  compose up -d --no-build "${SERVICES[@]}"
 else
-  compose up -d --build postgres bridge core-agent
+  build_local_dev_image
+  compose up -d --no-build "${SERVICES[@]}"
 fi
 
 if ! wait_for_url "http://127.0.0.1:${LCE_PORT}/api/health" "${LCE_WAIT_ATTEMPTS}" "${LCE_WAIT_DELAY}"; then
@@ -562,8 +851,20 @@ ZEBRA_URL="http://127.0.0.1:${ZEBRA_WEB_PORT}"
 RFID_URL="http://127.0.0.1:${RFID_WEB_PORT}"
 post_config "${TG_TOKEN}" "${ZEBRA_URL}" "${RFID_URL}"
 
-if ! wait_for_core_ready; then
-  echo "WARNING: core-agent hali ro'yxatdan o'tmadi (/api/status)." >&2
+if ! wait_for_children_ready; then
+  if as_bool "${LCE_FAIL_ON_CHILD_NOT_READY}"; then
+    echo "ERROR: child extension endpoint tayyor bo'lmadi." >&2
+    compose logs --tail=120 bridge >&2 || true
+    exit 1
+  fi
+fi
+
+if [[ "${LCE_START_CORE_AGENT}" -eq 1 ]]; then
+  if as_bool "${LCE_WAIT_CORE_READY}"; then
+    if ! wait_for_core_ready; then
+      echo "WARNING: core-agent hali ro'yxatdan o'tmadi (/api/status)." >&2
+    fi
+  fi
 fi
 
 OPEN_URL="http://127.0.0.1:${LCE_PORT}/api/status"

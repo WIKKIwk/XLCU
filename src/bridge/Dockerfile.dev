@@ -1,26 +1,16 @@
 # LCE Bridge Dev Runtime Image
 #
-# Goal: make `make run` reproducible on any machine that has Docker,
-# without requiring Elixir/Erlang/.NET/Node/Java installed on the host.
-#
-# This image is intentionally "fat": it includes the tooling needed to run
-# the Elixir bridge in dev mode and to spawn the Zebra (.NET) and RFID (Node+Java)
-# child processes from inside the same container.
-#
-# Versions are pinned via base image tags.
-#
-# Performance: hex/rebar tools and Elixir deps are pre-installed in the image
-# so the first `make run` doesn't waste time downloading/compiling them.
-# deps and _build are stored at /app/_image_deps and /app/_image_build as
-# fallback seeds — run_extensions.sh copies them into the volume-mounted dirs
-# only when those dirs are empty.
+# This Dockerfile exposes multiple targets so `make run` can build only what
+# the selected child app needs:
+#   - bridge-zebra : Elixir + .NET + USB helpers
+#   - bridge-rfid  : Elixir + Node + Java
+#   - bridge-all   : Elixir + .NET + Node + Java
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS dotnet
-
-FROM hexpm/elixir:1.16.2-erlang-26.2.5-debian-bookworm-20240513-slim
+FROM hexpm/elixir:1.16.2-erlang-26.2.5-debian-bookworm-20240513-slim AS bridge-dev-base
 
 SHELL ["/bin/bash", "-lc"]
 
+# Common build/runtime tools for Phoenix dev workflow.
 RUN apt-get update -y \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     bash \
@@ -28,46 +18,64 @@ RUN apt-get update -y \
     curl \
     git \
     build-essential \
-    nodejs \
-    openjdk-17-jre-headless \
-    # USB helpers (Zebra USB transport / diagnostics)
-    libusb-1.0-0 \
-    usbutils \
-    # dotnet runtime deps
-    libicu72 \
-    libssl3 \
-    libstdc++6 \
-    zlib1g \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy the .NET SDK from the official image so Zebra can run without downloading
-# dotnet at runtime (works with zebra_v1/run.sh which checks `dotnet --list-runtimes`).
-COPY --from=dotnet /usr/share/dotnet /usr/share/dotnet
-RUN ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet
-
-ENV DOTNET_ROOT=/usr/share/dotnet
-ENV PATH="/usr/share/dotnet:${PATH}"
-
-# Pre-install hex + rebar so container startup skips the download.
+# Pre-install hex + rebar so startup does not download them.
 RUN mix local.hex --force && mix local.rebar --force
 
 WORKDIR /app
 
-# Pre-fetch and compile Elixir dependencies.
-# Only mix.exs, mix.lock, and config are copied — source code is bind-mounted at runtime.
-# This layer is cached by Docker and only rebuilds when deps change.
+# Seed Elixir deps/_build into image; runtime script copies these into mounted
+# caches only once.
 COPY mix.exs mix.lock ./
 RUN mix deps.get
 
 COPY config/config.exs config/dev.exs config/
 RUN MIX_ENV=dev mix deps.compile
 
-# Store pre-built deps and _build as image seeds.
-# run_extensions.sh will copy these into empty volume mounts on first run.
 RUN cp -a /app/deps /app/_image_deps \
  && cp -a /app/_build /app/_image_build
 
-# Clean up working copies (volumes will be mounted over /app/deps and /app/_build).
 RUN rm -rf /app/deps /app/_build /app/config /app/mix.exs /app/mix.lock
+
+FROM bridge-dev-base AS bridge-rfid
+
+RUN apt-get update -y \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    nodejs \
+    openjdk-17-jre-headless \
+  && rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS dotnet
+
+FROM bridge-dev-base AS bridge-zebra
+
+RUN apt-get update -y \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libusb-1.0-0 \
+    usbutils \
+    libicu72 \
+    libssl3 \
+    libstdc++6 \
+    zlib1g \
+  && rm -rf /var/lib/apt/lists/*
+
+# Zebra child app uses `dotnet run`, so SDK is required.
+COPY --from=dotnet /usr/share/dotnet /usr/share/dotnet
+RUN ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet
+ENV DOTNET_ROOT=/usr/share/dotnet
+ENV PATH="/usr/share/dotnet:${PATH}"
+
+CMD ["bash"]
+
+FROM bridge-zebra AS bridge-all
+
+RUN apt-get update -y \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    nodejs \
+    openjdk-17-jre-headless \
+  && rm -rf /var/lib/apt/lists/*
 
 CMD ["bash"]
