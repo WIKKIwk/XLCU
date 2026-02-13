@@ -1101,10 +1101,10 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp handle_tag_scan(raw_epc) do
     epc = normalize_epc(raw_epc)
     # Dublikat filtr: soniyasiga 20+ marta kelishi mumkin
-    # Faqat yangi EPC lar PostgreSQL ga yoziladi va ERPNext dan qidiriladi
+    # Faqat yangi EPC lar PostgreSQL ga yoziladi va lokal cache orqali tekshiriladi
     case EpcRegistry.register_once(epc) do
       {:ok, :new} ->
-        Logger.info("RFID yangi EPC: #{epc}")
+        Logger.debug("RFID yangi EPC: #{epc}")
         Task.start(fn -> search_and_submit(epc) end)
 
       {:ok, :exists} ->
@@ -1127,7 +1127,6 @@ defmodule TitanBridge.Telegram.RfidBot do
           do_submit(draft_info.name, draft_info.doc, epc, token, chats)
 
         :not_found ->
-          Logger.info("RFID draft topilmadi: #{epc}")
           :ok
 
         {:error, reason} ->
@@ -1164,19 +1163,9 @@ defmodule TitanBridge.Telegram.RfidBot do
         {:ok, draft_info}
 
       :not_found ->
-        # Lokal cache da yo'q — ERPNext dan tekshiramiz (yangi draft bo'lishi mumkin)
-        Logger.debug("RFID EPC lokal cache da yo'q, ERPNext dan qidirilmoqda: #{epc}")
-
-        case ErpClient.find_open_draft_name_by_epc(epc) do
-          {:ok, name} when is_binary(name) ->
-            {:ok, %{name: name, doc: nil}}
-
-          :not_found ->
-            :not_found
-
-          {:error, _} = err ->
-            err
-        end
+        # Fast-path mode: scan paytida faqat RAM cache ishlatiladi.
+        # Miss bo'lsa ERP so'rov yubormaymiz, shunda submit kechikishi keskin kamayadi.
+        :not_found
     end
   end
 
