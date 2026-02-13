@@ -36,23 +36,33 @@ defmodule TitanBridge.Telegram.RfidBot do
     ChatState.init_tables!(@state_table, @temp_table)
     init_runtime_tables!()
     schedule_poll(poll_interval())
-    {:ok, %{}}
+    {:ok, %{poll_inflight: false}}
   end
 
   # --- Telegram Polling ---
 
   @impl true
+  def handle_info(:poll, %{poll_inflight: true} = state) do
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(:poll, state) do
     case SettingsStore.get() do
       %{rfid_telegram_token: token} when is_binary(token) and byte_size(token) > 0 ->
-        poll_updates(token)
+        run_poll_async(token)
+        {:noreply, Map.put(state, :poll_inflight, true)}
 
       _ ->
-        :ok
+        schedule_poll(poll_interval())
+        {:noreply, state}
     end
+  end
 
+  @impl true
+  def handle_info(:poll_done, state) do
     schedule_poll(poll_interval())
-    {:noreply, state}
+    {:noreply, Map.put(state, :poll_inflight, false)}
   end
 
   # --- RFID Tag Event ---
@@ -67,6 +77,24 @@ defmodule TitanBridge.Telegram.RfidBot do
   def handle_info(_msg, state), do: {:noreply, state}
 
   # --- Telegram API ---
+
+  defp run_poll_async(token) do
+    parent = self()
+
+    Task.start(fn ->
+      try do
+        poll_updates(token)
+      rescue
+        err ->
+          Logger.debug("RFID bot poll task error: #{Exception.message(err)}")
+      catch
+        kind, reason ->
+          Logger.debug("RFID bot poll task error: #{inspect({kind, reason})}")
+      after
+        send(parent, :poll_done)
+      end
+    end)
+  end
 
   defp poll_updates(token) do
     offset = get_offset()
@@ -83,6 +111,7 @@ defmodule TitanBridge.Telegram.RfidBot do
         Logger.debug("RFID bot poll error: #{inspect(err)}")
     end
   end
+
 
   defp handle_update(token, %{
          "message" =>
