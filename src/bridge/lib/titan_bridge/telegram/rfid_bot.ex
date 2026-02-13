@@ -14,7 +14,11 @@ defmodule TitanBridge.Telegram.RfidBot do
   use GenServer
   require Logger
 
+  import Ecto.Query
+
   alias TitanBridge.{SettingsStore, ErpClient, RfidListener, EpcRegistry, Cache, ErpSyncWorker}
+  alias TitanBridge.Repo
+  alias TitanBridge.Cache.StockDraft
   alias TitanBridge.Telegram.{ChatState, SetupUtils, Transport}
 
   @state_table :rfid_tg_state
@@ -1163,11 +1167,9 @@ defmodule TitanBridge.Telegram.RfidBot do
       token = get_rfid_token()
       chats = scanning_chats()
 
-      if chats == [] or is_nil(token) do
-        :ok
-      else
-        do_submit(draft_info.name, draft_info.doc, epc, token, chats)
-      end
+      # Silent mode: even if /scan chat state is not active, still submit immediately.
+      # Notifications are sent only when token+chat are available.
+      do_submit(draft_info.name, draft_info.doc, epc, token, chats)
     after
       clear_inflight(epc)
     end
@@ -1180,8 +1182,51 @@ defmodule TitanBridge.Telegram.RfidBot do
         {:ok, draft_info}
 
       :not_found ->
-        # Fast-path mode: scan paytida faqat RAM cache ishlatiladi.
-        # Miss bo'lsa ERP so'rov yubormaymiz, shunda submit kechikishi keskin kamayadi.
+        case find_draft_by_epc_local_store(epc) do
+          {:ok, draft_info} ->
+            {:ok, draft_info}
+
+          :not_found ->
+            find_draft_by_epc_erp_fallback(epc)
+        end
+    end
+  end
+
+  defp find_draft_by_epc_local_store(epc) do
+    try do
+      StockDraft
+      |> where([d], d.docstatus == 0)
+      |> order_by([d], desc: d.updated_at)
+      |> limit(500)
+      |> Repo.all()
+      |> Enum.find_value(:not_found, fn draft ->
+        doc = draft.data || %{}
+        summary = draft_from_doc(draft.name, doc)
+
+        if Enum.member?(summary.epcs, epc) do
+          {:ok, %{name: draft.name, doc: doc}}
+        else
+          nil
+        end
+      end)
+    rescue
+      _ ->
+        :not_found
+    end
+  end
+
+  defp find_draft_by_epc_erp_fallback(epc) do
+    case ErpClient.find_open_draft_name_by_epc(epc) do
+      {:ok, name} when is_binary(name) and name != "" ->
+        doc =
+          case ErpClient.get_doc("Stock Entry", name) do
+            {:ok, d} when is_map(d) -> d
+            _ -> %{"name" => name, "items" => []}
+          end
+
+        {:ok, %{name: name, doc: doc}}
+
+      _ ->
         :not_found
     end
   end
