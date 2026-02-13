@@ -1118,6 +1118,7 @@ defmodule TitanBridge.Telegram.RfidBot do
           do_submit(draft_info.name, draft_info.doc, epc, token, chats)
 
         :not_found ->
+          Logger.info("RFID draft topilmadi: #{epc}")
           :ok
 
         {:error, reason} ->
