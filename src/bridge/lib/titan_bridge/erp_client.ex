@@ -445,6 +445,7 @@ defmodule TitanBridge.ErpClient do
          true <- valid?(base, token),
          base <- normalize_base(base) do
       fields = Jason.encode!(["parent"])
+      parent = URI.encode("Stock Entry")
 
       # 0) Barcode bo'yicha qidirish (asosiy)
       barcode_filters =
@@ -459,6 +460,8 @@ defmodule TitanBridge.ErpClient do
           URI.encode(fields) <>
           "&filters=" <>
           URI.encode(barcode_filters) <>
+          "&parent=" <>
+          parent <>
           "&limit_page_length=1"
 
       case http_get(barcode_url, token) do
@@ -498,6 +501,8 @@ defmodule TitanBridge.ErpClient do
               URI.encode(fields) <>
               "&filters=" <>
               URI.encode(batch_filters) <>
+              "&parent=" <>
+              parent <>
               "&limit_page_length=1"
 
           case http_get(batch_url, token) do
@@ -518,6 +523,8 @@ defmodule TitanBridge.ErpClient do
                   URI.encode(fields) <>
                   "&filters=" <>
                   URI.encode(filters) <>
+                  "&parent=" <>
+                  parent <>
                   "&limit_page_length=1"
 
               case http_get(url, token) do

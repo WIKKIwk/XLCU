@@ -298,25 +298,63 @@ defmodule TitanBridge.Telegram.RfidBot do
   # --- /scan: ERPNext tekshir + RFID inventory boshlash ---
 
   defp handle_scan(token, chat_id) do
-    if get_state(chat_id) == "scanning" do
-      send_message(token, chat_id, "Allaqachon skaner rejimida. /stop bilan to'xtating.")
-    else
-      case ErpClient.ping() do
-        {:ok, _} ->
-          do_scan(token, chat_id)
+    state = get_state(chat_id)
+    settings = SettingsStore.get()
+    rfid_url = settings && settings.rfid_url
+    {_rfid_connected, inventory_running} = rfid_reader_status(rfid_url)
 
-        {:error, _} ->
-          keyboard = %{
-            "inline_keyboard" => [[%{"text" => "Qayta urinish", "callback_data" => "retry_scan"}]]
-          }
+    cond do
+      state == "scanning" and inventory_running ->
+        send_message(token, chat_id, "Allaqachon skaner rejimida. /stop bilan to'xtating.")
 
+      state == "scanning" and not inventory_running ->
+        # Web/TUI orqali stop qilingan bo'lsa, bot ichidagi stale state ni tiklaymiz.
+        RfidListener.unsubscribe(self())
+        set_state(chat_id, "ready")
+        start_scan_with_erp_check(token, chat_id, :recovered)
+
+      state != "scanning" and inventory_running ->
+        # Inventory tashqaridan allaqachon boshlangan: bot oqimiga ulab qo'yamiz.
+        put_temp(chat_id, "submitted_count", get_temp(chat_id, "submitted_count") || 0)
+        set_state(chat_id, "scanning")
+        RfidListener.subscribe(self())
+
+        send_message(
+          token,
+          chat_id,
+          "RFID inventory allaqachon ishlayapti. Bot skaner rejimiga qayta ulandi.\n" <>
+            "To'xtatish: /stop"
+        )
+
+      true ->
+        start_scan_with_erp_check(token, chat_id, :fresh)
+    end
+  end
+
+  defp start_scan_with_erp_check(token, chat_id, mode) do
+    case ErpClient.ping() do
+      {:ok, _} ->
+        if mode == :recovered do
           send_message(
             token,
             chat_id,
-            "ERPNext bilan aloqa yo'q. Tekshirib qayta urinib ko'ring.",
-            keyboard
+            "Skaner web/tashqi boshqaruv orqali to'xtatilgan edi. Qayta ishga tushirilmoqda..."
           )
-      end
+        end
+
+        do_scan(token, chat_id)
+
+      {:error, _} ->
+        keyboard = %{
+          "inline_keyboard" => [[%{"text" => "Qayta urinish", "callback_data" => "retry_scan"}]]
+        }
+
+        send_message(
+          token,
+          chat_id,
+          "ERPNext bilan aloqa yo'q. Tekshirib qayta urinib ko'ring.",
+          keyboard
+        )
     end
   end
 
@@ -786,42 +824,60 @@ defmodule TitanBridge.Telegram.RfidBot do
   # --- /list ---
 
   defp handle_list(token, chat_id) do
-    case ErpClient.list_drafts_with_epc() do
-      {:ok, drafts} when drafts != [] ->
-        lines =
-          drafts
-          |> Enum.take(20)
-          |> Enum.map(fn d ->
-            items =
-              Enum.map(d.items, fn i ->
-                epc = i.batch_no || i.serial_no
-                sn = if epc, do: " [#{String.slice(epc, 0, 12)}...]", else: ""
-                "#{i.item_code}: #{i.qty}#{sn}"
-              end)
-              |> Enum.join(", ")
+    Task.start(fn -> do_handle_list(token, chat_id) end)
+    :ok
+  end
 
-            "#{d.name} — #{items}"
-          end)
-          |> Enum.join("\n")
+  defp do_handle_list(token, chat_id) do
+    case get_drafts_cache(chat_id) do
+      {:ok, drafts} ->
+        send_drafts_list_message(token, chat_id, drafts)
 
-        send_message(token, chat_id, "Draft'lar (#{length(drafts)}):\n\n#{lines}")
+      :miss ->
+        case fetch_submit_drafts_detailed() do
+          {:ok, drafts} ->
+            put_drafts_cache(chat_id, drafts)
+            send_drafts_list_message(token, chat_id, drafts)
 
-      {:ok, []} ->
-        send_message(token, chat_id, "EPC li draft topilmadi.")
+          {:error, reason} ->
+            send_message(token, chat_id, list_error_message(reason))
+        end
+    end
+  end
 
-      {:error, reason} ->
-        msg =
-          cond do
-            is_binary(reason) and String.starts_with?(reason, "ERP GET failed: 401") ->
-              "ERPNext auth xato (401).\n" <>
-                "API KEY/SECRET noto'g'ri yoki o'zgargan bo'lishi mumkin.\n\n" <>
-                "/start yuborib qayta sozlang."
+  defp send_drafts_list_message(token, chat_id, drafts) when is_list(drafts) do
+    if drafts == [] do
+      send_message(token, chat_id, "EPC li draft topilmadi.")
+    else
+      lines =
+        drafts
+        |> Enum.take(20)
+        |> Enum.map(fn d ->
+          items =
+            Enum.map(d.items, fn i ->
+              epc = i.batch_no || i.serial_no || i.barcode
+              sn = if epc, do: " [#{String.slice(epc, 0, 12)}...]", else: ""
+              "#{i.item_code}: #{i.qty}#{sn}"
+            end)
+            |> Enum.join(", ")
 
-            true ->
-              "Xato: #{ErpClient.human_error(reason)}"
-          end
+          "#{d.name} — #{items}"
+        end)
+        |> Enum.join("\n")
 
-        send_message(token, chat_id, msg)
+      send_message(token, chat_id, "Draft'lar (#{length(drafts)}):\n\n#{lines}")
+    end
+  end
+
+  defp list_error_message(reason) do
+    cond do
+      is_binary(reason) and String.starts_with?(reason, "ERP GET failed: 401") ->
+        "ERPNext auth xato (401).\n" <>
+          "API KEY/SECRET noto'g'ri yoki o'zgargan bo'lishi mumkin.\n\n" <>
+          "/start yuborib qayta sozlang."
+
+      true ->
+        "Xato: #{ErpClient.human_error(reason)}"
     end
   end
 
@@ -1066,9 +1122,27 @@ defmodule TitanBridge.Telegram.RfidBot do
 
         {:error, reason} ->
           Logger.warning("RFID EPC qidirish xato: #{inspect(reason)}")
-          stop_scanning_erp_down(token, chats, reason)
+
+          if non_fatal_lookup_error?(reason) do
+            # Permission/policy muammosida butun skanni to'xtatib yubormaymiz.
+            # Qurilma ishlashi davom etadi; mos EPC lokal cache'dan topilsa submit bo'ladi.
+            :ok
+          else
+            stop_scanning_erp_down(token, chats, reason)
+          end
       end
     end
+  end
+
+  defp non_fatal_lookup_error?(reason) do
+    text =
+      case reason do
+        r when is_binary(r) -> r
+        r -> inspect(r)
+      end
+
+    String.contains?(text, "ERP GET failed: 403") or
+      String.contains?(text, "PermissionError")
   end
 
   # Gibrid qidirish: lokal cache → ERPNext fallback
@@ -1303,71 +1377,156 @@ defmodule TitanBridge.Telegram.RfidBot do
   end
 
   defp fetch_submit_drafts do
+    case fetch_submit_drafts_detailed() do
+      {:ok, drafts} -> drafts
+      {:error, _} -> []
+    end
+  end
+
+  defp fetch_submit_drafts_detailed do
+    local = fetch_submit_drafts_local()
+
+    if local != [] do
+      {:ok, local}
+    else
+      fetch_submit_drafts_from_erp()
+    end
+  end
+
+  defp fetch_submit_drafts_local do
+    drafts = Cache.list_stock_drafts()
+    index = epc_doc_index()
+
+    drafts
+    |> Enum.map(fn draft ->
+      name = to_string(draft.name || "")
+      mapped = Map.get(index, name, %{doc: %{}, epcs: []})
+      mapped_doc = if is_map(mapped.doc), do: mapped.doc, else: %{}
+      local_doc = if is_map(draft.data), do: draft.data, else: %{}
+      doc = if map_size(mapped_doc) > 0, do: mapped_doc, else: local_doc
+
+      summary = draft_from_doc(name, doc)
+      epcs = Enum.uniq(summary.epcs ++ (mapped.epcs || []))
+      %{summary | epcs: epcs}
+    end)
+    |> Enum.filter(fn d -> d.epcs != [] end)
+  end
+
+  defp fetch_submit_drafts_from_erp do
     case ErpClient.list_stock_drafts_modified(nil) do
       {:ok, rows} when is_list(rows) ->
-        rows
-        |> Enum.map(& &1["name"])
-        |> Enum.filter(&is_binary/1)
-        |> Enum.uniq()
-        |> Enum.map(&draft_summary/1)
+        drafts =
+          rows
+          |> Enum.map(& &1["name"])
+          |> Enum.filter(&is_binary/1)
+          |> Enum.uniq()
+          |> Task.async_stream(&draft_summary/1, ordered: false, max_concurrency: 6, timeout: 20_000)
+          |> Enum.reduce([], fn
+            {:ok, draft}, acc -> [draft | acc]
+            _, acc -> acc
+          end)
+          |> Enum.reverse()
+          |> Enum.filter(fn d -> d.epcs != [] end)
+
+        {:ok, drafts}
+
+      {:error, _} = err ->
+        err
 
       _ ->
-        []
+        {:ok, []}
+    end
+  end
+
+  defp epc_doc_index do
+    case :ets.whereis(:lce_cache_epc_drafts) do
+      :undefined ->
+        %{}
+
+      _ ->
+        :ets.tab2list(:lce_cache_epc_drafts)
+        |> Enum.reduce(%{}, fn
+          {epc, %{name: name, doc: doc}}, acc when is_binary(name) ->
+            prev = Map.get(acc, name, %{doc: %{}, epcs: []})
+            merged_doc =
+              if map_size(prev.doc || %{}) > 0 do
+                prev.doc
+              else
+                if is_map(doc), do: doc, else: %{}
+              end
+
+            merged_epcs =
+              [to_string(epc || "") | (prev.epcs || [])]
+              |> Enum.filter(&(&1 != ""))
+
+            Map.put(acc, name, %{doc: merged_doc, epcs: merged_epcs})
+
+          _, acc ->
+            acc
+        end)
+        |> Map.new(fn {name, info} ->
+          {name, %{doc: info.doc || %{}, epcs: Enum.uniq(info.epcs || [])}}
+        end)
     end
   end
 
   defp draft_summary(name) when is_binary(name) do
     case ErpClient.get_doc("Stock Entry", name) do
       {:ok, doc} when is_map(doc) ->
-        items = doc["items"] || []
-
-        epcs =
-          items
-          |> Enum.flat_map(fn item ->
-            barcode = String.trim(item["barcode"] || "")
-            batch = String.trim(item["batch_no"] || "")
-            serial = String.trim(item["serial_no"] || "")
-
-            serials =
-              if serial != "" do
-                serial
-                |> String.split(~r/[\s,]+/, trim: true)
-                |> Enum.map(&String.trim/1)
-                |> Enum.filter(&(&1 != ""))
-              else
-                []
-              end
-
-            # Prefer barcode for new flow, but keep batch/serial for legacy drafts.
-            Enum.filter([barcode, batch], &(&1 != "")) ++ serials
-          end)
-
-        epcs =
-          case extract_epc_from_remarks(doc["remarks"]) do
-            nil -> epcs
-            remark_epc -> [remark_epc | epcs]
-          end
-
-        %{
-          name: doc["name"] || name,
-          items:
-            Enum.map(items, fn item ->
-              %{
-                item_code: item["item_code"],
-                qty: item["qty"],
-                serial_no: item["serial_no"],
-                batch_no: item["batch_no"],
-                barcode: item["barcode"],
-                s_warehouse: item["s_warehouse"]
-              }
-            end),
-          epcs: Enum.uniq(epcs)
-        }
+        draft_from_doc(name, doc)
 
       _ ->
         %{name: name, items: [], epcs: []}
     end
   end
+
+  defp draft_from_doc(name, doc) when is_map(doc) do
+    items = doc["items"] || []
+
+    epcs =
+      items
+      |> Enum.flat_map(fn item ->
+        barcode = String.trim(item["barcode"] || "")
+        batch = String.trim(item["batch_no"] || "")
+        serial = String.trim(item["serial_no"] || "")
+
+        serials =
+          if serial != "" do
+            serial
+            |> String.split(~r/[\s,]+/, trim: true)
+            |> Enum.map(&String.trim/1)
+            |> Enum.filter(&(&1 != ""))
+          else
+            []
+          end
+
+        Enum.filter([barcode, batch], &(&1 != "")) ++ serials
+      end)
+
+    epcs =
+      case extract_epc_from_remarks(doc["remarks"]) do
+        nil -> epcs
+        remark_epc -> [remark_epc | epcs]
+      end
+
+    %{
+      name: doc["name"] || name,
+      items:
+        Enum.map(items, fn item ->
+          %{
+            item_code: item["item_code"],
+            qty: item["qty"],
+            serial_no: item["serial_no"],
+            batch_no: item["batch_no"],
+            barcode: item["barcode"],
+            s_warehouse: item["s_warehouse"]
+          }
+        end),
+      epcs: Enum.uniq(epcs)
+    }
+  end
+
+  defp draft_from_doc(name, _doc), do: %{name: name, items: [], epcs: []}
 
   defp extract_epc_from_remarks(remarks) when is_binary(remarks) do
     text =
