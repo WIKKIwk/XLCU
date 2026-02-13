@@ -380,6 +380,53 @@ defmodule TitanBridge.ErpClient do
     put_doc("Stock Entry", name, %{"docstatus" => 1})
   end
 
+  @doc """
+  Submit open Stock Entry by EPC via ERP custom method.
+
+  ERP method:
+    /api/method/titan_telegram.api.submit_open_stock_entry_by_epc
+
+  Returns:
+    {:ok, map}            when submitted
+    {:error, "epc_not_found"} when no open draft matched EPC
+    {:error, reason}      for other errors
+  """
+  def submit_open_stock_entry_by_epc(epc) when is_binary(epc) do
+    epc = String.trim(epc)
+
+    if epc == "" do
+      {:error, "epc_required"}
+    else
+      with %{erp_url: base, erp_token: token} <- get_config(),
+           true <- valid?(base, token),
+           base <- normalize_base(base) do
+        url = base <> "/api/method/titan_telegram.api.submit_open_stock_entry_by_epc"
+
+        case http_post(url, token, %{"epc" => epc}) do
+          {:ok, %{"message" => %{"ok" => true, "status" => "submitted"} = msg}} ->
+            {:ok, msg}
+
+          {:ok, %{"message" => %{"ok" => true, "status" => "not_found"}}} ->
+            {:error, "epc_not_found"}
+
+          {:ok, %{"message" => %{"ok" => false, "error" => err}}} ->
+            {:error, to_string(err)}
+
+          {:ok, %{"message" => msg}} when is_map(msg) ->
+            {:error, "Invalid ERP submit-by-epc response: #{inspect(msg)}"}
+
+          {:ok, payload} ->
+            {:error, "Invalid ERP submit-by-epc payload: #{inspect(payload)}"}
+
+          {:error, _} = err ->
+            err
+        end
+      else
+        _ -> {:error, "ERP config missing"}
+      end
+    end
+  end
+
   def list_drafts_with_epc do
     case list_stock_drafts_modified(nil) do
       {:ok, drafts} ->

@@ -1431,7 +1431,7 @@ defmodule TitanBridge.Telegram.RfidBot do
       Logger.debug("RFID submit skip (already submitted): #{name} EPC=#{epc}")
       :ok
     else
-      case submit_with_retry(name) do
+      case submit_with_retry(name, epc) do
         {:ok, _} ->
           Task.start(fn -> EpcRegistry.mark_submitted(epc) end)
           remember_submitted(epc)
@@ -1474,24 +1474,52 @@ defmodule TitanBridge.Telegram.RfidBot do
     end
   end
 
-  defp submit_with_retry(name) when is_binary(name) do
+  defp submit_with_retry(name, epc) when is_binary(name) and is_binary(epc) do
     max_retry = submit_retry_count()
     retry_ms = submit_retry_delay_ms()
-    do_submit_with_retry(name, max_retry, retry_ms, 0)
+    do_submit_with_retry(name, epc, max_retry, retry_ms, 0)
   end
 
-  defp do_submit_with_retry(name, max_retry, retry_ms, attempt) do
-    case ErpClient.submit_stock_entry(name) do
+  defp do_submit_with_retry(name, epc, max_retry, retry_ms, attempt) do
+    case submit_once(name, epc) do
       {:ok, _} = ok ->
         ok
 
       {:error, reason} = err ->
         if retryable_submit_error?(reason) and attempt < max_retry do
           Process.sleep(retry_ms)
-          do_submit_with_retry(name, max_retry, retry_ms, attempt + 1)
+          do_submit_with_retry(name, epc, max_retry, retry_ms, attempt + 1)
         else
           err
         end
+    end
+  end
+
+  defp submit_once(name, epc) do
+    if submit_by_epc_api_enabled?() do
+      case ErpClient.submit_open_stock_entry_by_epc(epc) do
+        {:ok, _} = ok ->
+          ok
+
+        {:error, "epc_not_found"} ->
+          # Fallback: if EPC lookup missed due normalization/legacy data,
+          # try direct submit by known draft name.
+          ErpClient.submit_stock_entry(name)
+
+        {:error, _} = err ->
+          err
+      end
+    else
+      ErpClient.submit_stock_entry(name)
+    end
+  end
+
+  defp submit_by_epc_api_enabled? do
+    case String.downcase(to_string(System.get_env("LCE_RFID_SUBMIT_BY_EPC_API") || "1")) do
+      "0" -> false
+      "false" -> false
+      "no" -> false
+      _ -> true
     end
   end
 
