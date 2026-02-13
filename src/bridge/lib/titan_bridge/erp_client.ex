@@ -194,6 +194,64 @@ defmodule TitanBridge.ErpClient do
     )
   end
 
+  @doc """
+  Fast-path for RFID cache: fetch open Stock Entry drafts in one ERP method call.
+
+  Expects ERP method:
+    /api/method/titan_telegram.api.get_open_stock_entry_drafts_fast
+
+  Returns:
+    {:ok, payload_map} | {:error, reason}
+  """
+  def get_open_stock_entry_drafts_fast(modified_since \\ nil, opts \\ []) do
+    with %{erp_url: base, erp_token: token} <- get_config(),
+         true <- valid?(base, token),
+         base <- normalize_base(base) do
+      endpoint = "/api/method/titan_telegram.api.get_open_stock_entry_drafts_fast"
+
+      limit =
+        case Keyword.get(opts, :limit) do
+          n when is_integer(n) and n > 0 -> n
+          _ -> 5000
+        end
+
+      include_items =
+        if Keyword.get(opts, :include_items, true) in [false, 0, "0", "false"], do: "0", else: "1"
+
+      only_with_epc =
+        if Keyword.get(opts, :only_with_epc, true) in [false, 0, "0", "false"], do: "0", else: "1"
+
+      query_params =
+        [
+          {"limit", Integer.to_string(limit)},
+          {"include_items", include_items},
+          {"only_with_epc", only_with_epc}
+        ]
+        |> then(fn params ->
+          since = to_string(modified_since || "") |> String.trim()
+          if since == "", do: params, else: [{"modified_since", since} | params]
+        end)
+
+      url = base <> endpoint <> "?" <> URI.encode_query(query_params)
+
+      case http_get(url, token) do
+        {:ok, %{"message" => message}} when is_map(message) ->
+          parse_fast_drafts_response(message)
+
+        {:ok, message} when is_map(message) ->
+          parse_fast_drafts_response(message)
+
+        {:ok, _} ->
+          {:error, "Invalid ERP fast drafts response"}
+
+        {:error, _} = err ->
+          err
+      end
+    else
+      _ -> {:error, "ERP config missing"}
+    end
+  end
+
   def list_products(warehouse \\ nil) do
     with %{erp_url: base, erp_token: token} <- get_config(),
          true <- valid?(base, token),
@@ -1104,5 +1162,21 @@ defmodule TitanBridge.ErpClient do
 
   defp build_modified_filters(doctype, since) when is_binary(since) do
     [[doctype, "modified", ">=", since]]
+  end
+
+  defp parse_fast_drafts_response(message) when is_map(message) do
+    ok? = message["ok"]
+
+    if ok? in [false, "false", 0, "0"] do
+      {:error, message["error"] || "ERP fast drafts api returned error"}
+    else
+      drafts = message["drafts"] || []
+
+      if is_list(drafts) do
+        {:ok, message}
+      else
+        {:error, "ERP fast drafts payload missing drafts[]"}
+      end
+    end
   end
 end

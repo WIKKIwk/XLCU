@@ -139,7 +139,7 @@ defmodule TitanBridge.ErpSyncWorker do
 
   defp sync_stock_drafts(full_refresh) do
     since = if full_refresh, do: nil, else: SyncState.get("stock_drafts_modified")
-    rows = fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)
+    rows = fetch_stock_draft_rows(since)
 
     cond do
       rows == [] and full_refresh ->
@@ -152,6 +152,85 @@ defmodule TitanBridge.ErpSyncWorker do
 
     # EPC → draft mapping yangilash (lokal cache dan)
     build_epc_draft_mapping()
+  end
+
+  defp fetch_stock_draft_rows(since) do
+    if use_fast_drafts_api?() do
+      case ErpClient.get_open_stock_entry_drafts_fast(since,
+             limit: fast_drafts_limit(),
+             include_items: true,
+             only_with_epc: true
+           ) do
+        {:ok, payload} ->
+          drafts = payload["drafts"] || []
+
+          rows =
+            drafts
+            |> Enum.map(&fast_draft_to_row/1)
+            |> Enum.filter(&is_binary(&1["name"]))
+
+          Logger.info(
+            "[FAST_DRAFTS] ERP method loaded #{length(rows)} drafts (since=#{inspect(since)})"
+          )
+
+          rows
+
+        {:error, reason} ->
+          Logger.warning(
+            "[FAST_DRAFTS] method failed, fallback to Stock Entry list: #{inspect(reason)}"
+          )
+
+          fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)
+      end
+    else
+      fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)
+    end
+  end
+
+  defp fast_draft_to_row(draft) when is_map(draft) do
+    items =
+      (draft["items"] || [])
+      |> Enum.map(fn item ->
+        %{
+          "item_code" => item["item_code"],
+          "qty" => item["qty"],
+          "s_warehouse" => item["s_warehouse"],
+          "t_warehouse" => item["t_warehouse"],
+          "barcode" => item["barcode"] || "",
+          "batch_no" => item["batch_no"] || "",
+          "serial_no" => item["serial_no"] || ""
+        }
+      end)
+
+    %{
+      "name" => draft["name"],
+      "docstatus" => 0,
+      "purpose" => draft["purpose"],
+      "posting_date" => draft["posting_date"],
+      "posting_time" => draft["posting_time"],
+      "from_warehouse" => draft["from_warehouse"],
+      "to_warehouse" => draft["to_warehouse"],
+      "modified" => draft["modified"],
+      "items" => items
+    }
+  end
+
+  defp fast_draft_to_row(_), do: %{}
+
+  defp use_fast_drafts_api? do
+    case String.downcase(to_string(System.get_env("LCE_ERP_FAST_DRAFT_API") || "1")) do
+      "0" -> false
+      "false" -> false
+      "no" -> false
+      _ -> true
+    end
+  end
+
+  defp fast_drafts_limit do
+    case Integer.parse(to_string(System.get_env("LCE_ERP_FAST_DRAFT_LIMIT") || "")) do
+      {n, _} when n >= 100 and n <= 50_000 -> n
+      _ -> 5000
+    end
   end
 
   defp fetch_rows(fun, since) do

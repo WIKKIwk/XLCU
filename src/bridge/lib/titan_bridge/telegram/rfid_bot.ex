@@ -1951,6 +1951,29 @@ defmodule TitanBridge.Telegram.RfidBot do
   end
 
   defp fetch_submit_drafts_from_erp do
+    case ErpClient.get_open_stock_entry_drafts_fast(nil,
+           limit: 5000,
+           include_items: true,
+           only_with_epc: true
+         ) do
+      {:ok, %{"drafts" => drafts}} when is_list(drafts) ->
+        result =
+          drafts
+          |> Enum.map(&draft_summary_from_fast/1)
+          |> Enum.filter(fn d -> d.epcs != [] end)
+
+        {:ok, result}
+
+      {:ok, _} ->
+        fetch_submit_drafts_from_erp_legacy()
+
+      {:error, reason} ->
+        Logger.debug("RFID list fast drafts fallback: #{inspect(reason)}")
+        fetch_submit_drafts_from_erp_legacy()
+    end
+  end
+
+  defp fetch_submit_drafts_from_erp_legacy do
     case ErpClient.list_stock_drafts_modified(nil) do
       {:ok, rows} when is_list(rows) ->
         drafts =
@@ -1978,6 +2001,32 @@ defmodule TitanBridge.Telegram.RfidBot do
       _ ->
         {:ok, []}
     end
+  end
+
+  defp draft_summary_from_fast(draft) when is_map(draft) do
+    items =
+      (draft["items"] || [])
+      |> Enum.map(fn i ->
+        %{
+          item_code: i["item_code"],
+          qty: i["qty"],
+          serial_no: i["serial_no"],
+          batch_no: i["batch_no"],
+          barcode: i["barcode"]
+        }
+      end)
+
+    epcs =
+      (draft["epcs"] || [])
+      |> Enum.map(&normalize_epc/1)
+      |> Enum.filter(&(&1 != ""))
+      |> Enum.uniq()
+
+    %{
+      name: draft["name"],
+      items: items,
+      epcs: epcs
+    }
   end
 
   defp epc_doc_index do
