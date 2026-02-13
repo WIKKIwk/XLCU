@@ -24,10 +24,13 @@ defmodule TitanBridge.Telegram.RfidBot do
   @state_table :rfid_tg_state
   @temp_table :rfid_tg_temp
   @inflight_table :rfid_tg_inflight
+  @inflight_drafts_table :rfid_tg_inflight_drafts
   @miss_table :rfid_tg_miss
+  @submitted_table :rfid_tg_submitted
+  @submitted_drafts_table :rfid_tg_submitted_drafts
   @poll_default_ms 1200
   @poll_timeout_default 25
-  @miss_ttl_default_ms 300
+  @miss_ttl_default_ms 2_000
   @drafts_cache_ttl_ms 60_000
   @draft_refresh_default_ms 180_000
   @draft_sync_timeout_default_ms 60_000
@@ -41,8 +44,10 @@ defmodule TitanBridge.Telegram.RfidBot do
   def init(_) do
     ChatState.init_tables!(@state_table, @temp_table)
     init_runtime_tables!()
+    :ok = RfidListener.subscribe(self())
     schedule_poll(poll_interval())
     if draft_refresh_interval_ms() > 0, do: schedule_draft_refresh(draft_refresh_interval_ms())
+    Logger.info("RFID bot listener subscribed (persistent mode)")
     {:ok, %{poll_inflight: false, draft_refresh_inflight: false}}
   end
 
@@ -309,7 +314,6 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp reset_chat_for_setup(token, chat_id) do
     # If the bot was scanning, stop it first so the setup wizard doesn't compete with scan flow.
     if get_state(chat_id) == "scanning" do
-      RfidListener.unsubscribe(self())
       rfid_inventory_stop()
     end
 
@@ -402,7 +406,6 @@ defmodule TitanBridge.Telegram.RfidBot do
 
       state == "scanning" and not inventory_running ->
         # Web/TUI orqali stop qilingan bo'lsa, bot ichidagi stale state ni tiklaymiz.
-        RfidListener.unsubscribe(self())
         set_state(chat_id, "ready")
         start_scan_with_erp_check(token, chat_id, :recovered)
 
@@ -411,6 +414,7 @@ defmodule TitanBridge.Telegram.RfidBot do
         put_temp(chat_id, "submitted_count", get_temp(chat_id, "submitted_count") || 0)
         set_state(chat_id, "scanning")
         RfidListener.subscribe(self())
+        Logger.info("RFID bot scan attached to already-running inventory (chat=#{chat_id})")
 
         send_message(
           token,
@@ -672,6 +676,7 @@ defmodule TitanBridge.Telegram.RfidBot do
         {:ok, _} ->
           # Cache cleanup: draft va EPC mappingni olib tashlash (scanner qayta submit qilmasin)
           Cache.delete_stock_draft(name)
+          remember_submitted_draft(name)
 
           items = (doc || %{})["items"] || []
 
@@ -703,6 +708,7 @@ defmodule TitanBridge.Telegram.RfidBot do
               epc = normalize_epc(raw)
 
               if epc != "" do
+                remember_submitted(epc)
                 Cache.delete_epc_mapping(epc)
               end
             end)
@@ -865,6 +871,7 @@ defmodule TitanBridge.Telegram.RfidBot do
         put_temp(chat_id, "submitted_count", 0)
         set_state(chat_id, "scanning")
         RfidListener.subscribe(self())
+        Logger.info("RFID bot scan started (chat=#{chat_id})")
 
         send_message(
           token,
@@ -889,7 +896,6 @@ defmodule TitanBridge.Telegram.RfidBot do
 
   defp handle_stop(token, chat_id) do
     if get_state(chat_id) == "scanning" do
-      RfidListener.unsubscribe(self())
       rfid_inventory_stop()
 
       submitted = get_temp(chat_id, "submitted_count") || 0
@@ -1213,24 +1219,49 @@ defmodule TitanBridge.Telegram.RfidBot do
     else
       cond do
         inflight?(epc) ->
+          Logger.debug("RFID [#{epc}] SKIP: inflight")
+          :ok
+
+        recently_submitted?(epc) ->
+          Logger.debug("RFID [#{epc}] SKIP: recently_submitted")
           :ok
 
         recently_missed?(epc) ->
           :ok
 
         true ->
+          Logger.info("RFID [#{epc}] qidirish boshlandi...")
           case find_draft_by_epc(epc) do
             {:ok, draft_info} ->
               clear_miss(epc)
+              name = draft_info.name
+              Logger.info("RFID [#{epc}] TOPILDI -> #{name}")
 
-              if mark_inflight(epc) do
-                Logger.debug("RFID yangi EPC: #{epc}")
-                Task.start(fn -> search_and_submit(epc, draft_info) end)
-              else
-                :ok
+              cond do
+                recently_submitted_draft?(name) ->
+                  remember_submitted(epc)
+                  Cache.delete_epc_mapping(epc)
+                  Logger.debug("RFID skip (draft submitted): #{name}")
+
+                draft_inflight?(name) ->
+                  Logger.debug("RFID [#{epc}] SKIP: draft_inflight #{name}")
+                  :ok
+
+                mark_inflight(epc) ->
+                  if mark_draft_inflight(name) do
+                    Logger.info("RFID [#{epc}] SUBMIT boshlandi: #{name}")
+                    Task.start(fn -> search_and_submit(epc, draft_info) end)
+                  else
+                    clear_inflight(epc)
+                    :ok
+                  end
+
+                true ->
+                  :ok
               end
 
             :not_found ->
+              Logger.debug("RFID [#{epc}] TOPILMADI (3 qatlam)")
               remember_miss(epc)
               :ok
           end
@@ -1239,30 +1270,41 @@ defmodule TitanBridge.Telegram.RfidBot do
   end
 
   defp search_and_submit(epc, draft_info) do
+    draft_name = draft_info.name
+
     try do
       token = get_rfid_token()
       chats = scanning_chats()
+      Logger.info("RFID submit start: draft=#{draft_name} epc=#{epc} chats=#{length(chats)}")
 
       # Silent mode: even if /scan chat state is not active, still submit immediately.
       # Notifications are sent only when token+chat are available.
-      do_submit(draft_info.name, draft_info.doc, epc, token, chats)
+      do_submit(draft_name, draft_info.doc, epc, token, chats)
     after
       clear_inflight(epc)
+      clear_draft_inflight(draft_name)
     end
   end
 
   # Gibrid qidirish: lokal cache → ERPNext fallback
   defp find_draft_by_epc(epc) do
+    # 1-qatlam: ETS cache
     case Cache.find_draft_by_epc(epc) do
       {:ok, draft_info} ->
+        Logger.info("RFID [#{epc}] 1-QATLAM ETS: TOPILDI -> #{draft_info.name}")
         {:ok, draft_info}
 
       :not_found ->
+        Logger.debug("RFID [#{epc}] 1-QATLAM ETS: topilmadi, PostgreSQL ga o'tish...")
+        # 2-qatlam: PostgreSQL
         case find_draft_by_epc_local_store(epc) do
           {:ok, draft_info} ->
+            Logger.info("RFID [#{epc}] 2-QATLAM PG: TOPILDI -> #{draft_info.name}")
             {:ok, draft_info}
 
           :not_found ->
+            Logger.debug("RFID [#{epc}] 2-QATLAM PG: topilmadi, ERP fallback ga o'tish...")
+            # 3-qatlam: ERPNext API
             find_draft_by_epc_erp_fallback(epc)
         end
     end
@@ -1270,11 +1312,16 @@ defmodule TitanBridge.Telegram.RfidBot do
 
   defp find_draft_by_epc_local_store(epc) do
     try do
-      StockDraft
-      |> where([d], d.docstatus == 0)
-      |> order_by([d], desc: d.updated_at)
-      |> limit(500)
-      |> Repo.all()
+      drafts =
+        StockDraft
+        |> where([d], d.docstatus == 0)
+        |> order_by([d], desc: d.updated_at)
+        |> limit(500)
+        |> Repo.all()
+
+      Logger.debug("RFID [#{epc}] PG: #{length(drafts)} ta draft yuklandi")
+
+      drafts
       |> Enum.find_value(:not_found, fn draft ->
         doc = draft.data || %{}
         summary = draft_from_doc(draft.name, doc)
@@ -1286,19 +1333,39 @@ defmodule TitanBridge.Telegram.RfidBot do
           |> Enum.uniq()
 
         if Enum.member?(normalized_epcs, epc) do
+          Logger.info("RFID [#{epc}] PG match: #{draft.name} epcs=#{inspect(Enum.take(normalized_epcs, 3))}")
           {:ok, %{name: draft.name, doc: doc}}
         else
           nil
         end
       end)
     rescue
-      _ ->
+      e ->
+        Logger.warning("find_draft_by_epc_local_store error: #{inspect(e)}")
         :not_found
     end
   end
 
   defp find_draft_by_epc_erp_fallback(epc) do
-    case ErpClient.find_open_draft_name_by_epc(epc) do
+    timeout = erp_fallback_timeout_ms()
+
+    task =
+      Task.async(fn ->
+        ErpClient.find_open_draft_name_by_epc(epc)
+      end)
+
+    result =
+      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, value} ->
+          Logger.info("RFID [#{epc}] 3-QATLAM ERP: javob olindi: #{inspect(value)}")
+          value
+
+        nil ->
+          Logger.warning("RFID [#{epc}] 3-QATLAM ERP: TIMEOUT #{timeout}ms")
+          :not_found
+      end
+
+    case result do
       {:ok, name} when is_binary(name) and name != "" ->
         doc =
           case ErpClient.get_doc("Stock Entry", name) do
@@ -1306,50 +1373,74 @@ defmodule TitanBridge.Telegram.RfidBot do
             _ -> %{"name" => name, "items" => []}
           end
 
-        {:ok, %{name: name, doc: doc}}
+        if draft_doc_open?(doc) do
+          Logger.info("RFID [#{epc}] 3-QATLAM ERP: TOPILDI -> #{name}")
+          {:ok, %{name: name, doc: doc}}
+        else
+          Logger.warning("RFID [#{epc}] 3-QATLAM ERP: draft ochiq emas: #{name}")
+          :not_found
+        end
 
       _ ->
         :not_found
     end
+  rescue
+    e ->
+      Logger.warning("RFID ERP fallback rescue: #{inspect(e)}")
+      :not_found
+  catch
+    :exit, reason ->
+      Logger.warning("RFID ERP fallback exit: #{inspect(reason)}")
+      :not_found
   end
 
   defp do_submit(name, doc, epc, token, chats) do
-    case submit_with_retry(name) do
-      {:ok, _} ->
-        Task.start(fn -> EpcRegistry.mark_submitted(epc) end)
-        # Lokal cache dan olib tashlaymiz — qayta submit bo'lmasin
-        Cache.delete_epc_mapping(epc)
-        Logger.info("RFID auto-submit: #{name} (EPC: #{epc})")
+    if recently_submitted_draft?(name) do
+      remember_submitted(epc)
+      Cache.delete_epc_mapping(epc)
+      Logger.debug("RFID submit skip (already submitted): #{name} EPC=#{epc}")
+      :ok
+    else
+      case submit_with_retry(name) do
+        {:ok, _} ->
+          Task.start(fn -> EpcRegistry.mark_submitted(epc) end)
+          remember_submitted(epc)
+          remember_submitted_draft(name)
+          cleanup_submitted_draft_local(name)
+          # Lokal cache dan olib tashlaymiz — qayta submit bo'lmasin
+          Cache.delete_epc_mapping(epc)
+          Logger.info("RFID auto-submit: #{name} (EPC: #{epc})")
 
-        items = (doc || %{})["items"] || []
+          items = (doc || %{})["items"] || []
 
-        items_text =
-          items
-          |> Enum.map(fn i -> "#{i["item_code"]}: #{i["qty"]}" end)
-          |> Enum.join(", ")
+          items_text =
+            items
+            |> Enum.map(fn i -> "#{i["item_code"]}: #{i["qty"]}" end)
+            |> Enum.join(", ")
 
-        submit_text =
-          if String.trim(items_text) == "" do
-            "#{name} submitted!\nEPC: #{String.slice(epc, 0, 16)}..."
+          submit_text =
+            if String.trim(items_text) == "" do
+              "#{name} submitted!\nEPC: #{String.slice(epc, 0, 16)}..."
+            else
+              "#{name} submitted!\n#{items_text}\nEPC: #{String.slice(epc, 0, 16)}..."
+            end
+
+          Enum.each(chats, fn chat_id ->
+            old_count = get_temp(chat_id, "submitted_count") || 0
+            put_temp(chat_id, "submitted_count", old_count + 1)
+
+            send_message(token, chat_id, submit_text)
+          end)
+
+        {:error, reason} ->
+          Logger.warning("RFID submit xato: #{name} — #{inspect(reason)}")
+
+          if is_binary(token) and byte_size(token) > 0 and is_list(chats) and chats != [] do
+            stop_scanning_erp_down(token, chats, reason)
           else
-            "#{name} submitted!\n#{items_text}\nEPC: #{String.slice(epc, 0, 16)}..."
+            :ok
           end
-
-        Enum.each(chats, fn chat_id ->
-          old_count = get_temp(chat_id, "submitted_count") || 0
-          put_temp(chat_id, "submitted_count", old_count + 1)
-
-          send_message(token, chat_id, submit_text)
-        end)
-
-      {:error, reason} ->
-        Logger.warning("RFID submit xato: #{name} — #{inspect(reason)}")
-
-        if is_binary(token) and byte_size(token) > 0 and is_list(chats) and chats != [] do
-          stop_scanning_erp_down(token, chats, reason)
-        else
-          :ok
-        end
+      end
     end
   end
 
@@ -1400,8 +1491,33 @@ defmodule TitanBridge.Telegram.RfidBot do
     end
   end
 
+  defp cleanup_submitted_draft_local(name) when is_binary(name) and name != "" do
+    # Keep local cache consistent immediately after successful submit,
+    # otherwise stale docstatus=0 rows can be re-matched and re-submitted.
+    try do
+      _ = Repo.delete_all(from(d in StockDraft, where: d.name == ^name))
+      Cache.delete_stock_draft(name)
+      :ok
+    rescue
+      _ -> :ok
+    end
+  end
+
+  defp cleanup_submitted_draft_local(_), do: :ok
+
+  defp draft_doc_open?(doc) when is_map(doc) do
+    value = doc["docstatus"] || doc[:docstatus]
+
+    case value do
+      0 -> true
+      "0" -> true
+      _ -> false
+    end
+  end
+
+  defp draft_doc_open?(_), do: false
+
   defp stop_scanning_erp_down(token, chats, reason \\ nil) do
-    RfidListener.unsubscribe(self())
     rfid_inventory_stop()
 
     reason_text =
@@ -1538,7 +1654,10 @@ defmodule TitanBridge.Telegram.RfidBot do
 
   defp init_runtime_tables! do
     ensure_table!(@inflight_table)
+    ensure_table!(@inflight_drafts_table)
     ensure_table!(@miss_table)
+    ensure_table!(@submitted_table)
+    ensure_table!(@submitted_drafts_table)
   end
 
   defp ensure_table!(name) do
@@ -1567,12 +1686,80 @@ defmodule TitanBridge.Telegram.RfidBot do
 
   defp clear_inflight(epc), do: :ets.delete(@inflight_table, epc)
 
+  defp mark_draft_inflight(name) when is_binary(name) and name != "" do
+    :ets.insert_new(@inflight_drafts_table, {name, System.monotonic_time(:millisecond)})
+  end
+
+  defp mark_draft_inflight(_), do: false
+
+  defp draft_inflight?(name) when is_binary(name) and name != "" do
+    :ets.member(@inflight_drafts_table, name)
+  end
+
+  defp draft_inflight?(_), do: false
+
+  defp clear_draft_inflight(name) when is_binary(name) and name != "" do
+    :ets.delete(@inflight_drafts_table, name)
+  end
+
+  defp clear_draft_inflight(_), do: :ok
+
   defp remember_miss(epc) do
     :ets.insert(@miss_table, {epc, System.monotonic_time(:millisecond)})
     :ok
   end
 
   defp clear_miss(epc), do: :ets.delete(@miss_table, epc)
+
+  defp remember_submitted(epc) do
+    :ets.insert(@submitted_table, {epc, System.monotonic_time(:millisecond)})
+    :ok
+  end
+
+  defp remember_submitted_draft(name) when is_binary(name) and name != "" do
+    :ets.insert(@submitted_drafts_table, {name, System.monotonic_time(:millisecond)})
+    :ok
+  end
+
+  defp remember_submitted_draft(_), do: :ok
+
+  defp recently_submitted?(epc) do
+    now = System.monotonic_time(:millisecond)
+    ttl = submitted_ttl_ms()
+
+    case :ets.lookup(@submitted_table, epc) do
+      [{^epc, ts}] ->
+        if now - ts < ttl do
+          true
+        else
+          :ets.delete(@submitted_table, epc)
+          false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp recently_submitted_draft?(name) when is_binary(name) and name != "" do
+    now = System.monotonic_time(:millisecond)
+    ttl = submitted_draft_ttl_ms()
+
+    case :ets.lookup(@submitted_drafts_table, name) do
+      [{^name, ts}] ->
+        if now - ts < ttl do
+          true
+        else
+          :ets.delete(@submitted_drafts_table, name)
+          false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp recently_submitted_draft?(_), do: false
 
   defp recently_missed?(epc) do
     now = System.monotonic_time(:millisecond)
@@ -1596,6 +1783,20 @@ defmodule TitanBridge.Telegram.RfidBot do
     case Integer.parse(to_string(System.get_env("LCE_RFID_MISS_TTL_MS") || "")) do
       {n, _} when n >= 0 and n <= 5_000 -> n
       _ -> @miss_ttl_default_ms
+    end
+  end
+
+  defp submitted_ttl_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_SUBMITTED_TTL_MS") || "")) do
+      {n, _} when n >= 0 and n <= 86_400_000 -> n
+      _ -> 300_000
+    end
+  end
+
+  defp submitted_draft_ttl_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_SUBMITTED_DRAFT_TTL_MS") || "")) do
+      {n, _} when n >= 0 and n <= 86_400_000 -> n
+      _ -> 21_600_000
     end
   end
 
@@ -1628,6 +1829,13 @@ defmodule TitanBridge.Telegram.RfidBot do
     case Integer.parse(to_string(System.get_env("LCE_RFID_DRAFT_SYNC_TIMEOUT_MS") || "")) do
       {n, _} when n >= 5_000 and n <= 300_000 -> n
       _ -> @draft_sync_timeout_default_ms
+    end
+  end
+
+  defp erp_fallback_timeout_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_ERP_FALLBACK_TIMEOUT_MS") || "")) do
+      {n, _} when n >= 500 and n <= 60_000 -> n
+      _ -> 12_000
     end
   end
 

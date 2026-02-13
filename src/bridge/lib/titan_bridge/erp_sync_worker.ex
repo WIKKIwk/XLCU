@@ -261,12 +261,20 @@ defmodule TitanBridge.ErpSyncWorker do
   # Har bir draft uchun to'liq doc (items + serial_no) olib kelinadi
   defp build_epc_draft_mapping do
     drafts = Cache.list_stock_drafts()
+    Logger.info("[EPC_MAP] Mapping qurilmoqda: #{length(drafts)} ta draft")
+
+    {fetched_count, cached_count} =
+      drafts
+      |> Enum.reduce({0, 0}, fn draft, {f, c} ->
+        data = draft.data || %{}
+        if is_list(data["items"]) and data["items"] != [], do: {f, c + 1}, else: {f + 1, c}
+      end)
+
+    Logger.info("[EPC_MAP] items mavjud: #{cached_count}, get_doc kerak: #{fetched_count}")
 
     mappings =
       drafts
       |> Enum.flat_map(fn draft ->
-        # data fieldida to'liq doc bo'lishi mumkin, yoki faqat asosiy fieldlar
-        # Agar items yo'q bo'lsa — ERPNext dan olib kelamiz
         doc = fetch_full_doc(draft)
         items = doc["items"] || []
 
@@ -289,7 +297,6 @@ defmodule TitanBridge.ErpSyncWorker do
                   []
                 end
 
-              # Prefer barcode for new flow, but keep batch/serial for legacy drafts.
               Enum.filter([barcode, batch], &(&1 != "")) ++ serials
             end)
 
@@ -301,6 +308,8 @@ defmodule TitanBridge.ErpSyncWorker do
       end)
 
     Cache.put_epc_draft_mapping(mappings)
+    epc_list = Enum.map(mappings, fn {epc, _} -> epc end)
+    Logger.info("[EPC_MAP] Tayyor: #{length(mappings)} ta EPC mapping. Namuna: #{inspect(Enum.take(epc_list, 5))}")
   end
 
   defp extract_epc_from_remarks(remarks) when is_binary(remarks) do
@@ -324,10 +333,13 @@ defmodule TitanBridge.ErpSyncWorker do
     if is_list(data["items"]) and data["items"] != [] do
       data
     else
-      # ERPNext dan to'liq doc olib kelamiz
+      Logger.debug("[EPC_MAP] get_doc: #{draft.name}...")
       case ErpClient.get_doc("Stock Entry", draft.name) do
         {:ok, doc} ->
-          # data fieldini yangilaymiz (keyingi safar ERPNext ga bormaslik uchun)
+          items = doc["items"] || []
+          barcodes = Enum.map(items, fn i -> i["barcode"] end) |> Enum.filter(&is_binary/1)
+          Logger.info("[EPC_MAP] get_doc OK: #{draft.name} items=#{length(items)} barcodes=#{inspect(barcodes)}")
+
           now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
           Repo.update_all(
@@ -335,9 +347,14 @@ defmodule TitanBridge.ErpSyncWorker do
             set: [data: doc, updated_at: now]
           )
 
+          # ETS keshni ham yangilaymiz — keyingi siklda qayta so'rov ketmasligi uchun
+          updated = %{draft | data: doc, updated_at: now}
+          :ets.insert(:lce_cache_stock_drafts, {draft.name, updated})
+
           doc
 
-        {:error, _} ->
+        {:error, reason} ->
+          Logger.warning("[EPC_MAP] get_doc XATO: #{draft.name} -> #{inspect(reason)}")
           data
       end
     end

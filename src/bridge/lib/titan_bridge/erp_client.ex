@@ -847,8 +847,9 @@ defmodule TitanBridge.ErpClient do
           |> Task.async_stream(
             fn name -> stock_entry_matches_epc?(base, token, name, normalized_epc) end,
             ordered: false,
-            max_concurrency: 8,
-            timeout: min(max(erp_timeout_ms(), 5_000), 20_000)
+            max_concurrency: 6,
+            timeout: min(max(div(erp_timeout_ms(), 2), 1_500), 5_000),
+            on_timeout: :kill_task
           )
           |> Enum.find_value(:not_found, fn
             {:ok, {:ok, name}} -> {:ok, name}

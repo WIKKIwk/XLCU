@@ -34,8 +34,14 @@ defmodule TitanBridge.RfidListener do
 
   @impl true
   def handle_call({:subscribe, pid}, _from, state) do
-    ref = Process.monitor(pid)
-    {:reply, :ok, %{state | subscribers: MapSet.put(state.subscribers, {pid, ref})}}
+    already_subscribed? = Enum.any?(state.subscribers, fn {p, _ref} -> p == pid end)
+
+    if already_subscribed? do
+      {:reply, :ok, state}
+    else
+      ref = Process.monitor(pid)
+      {:reply, :ok, %{state | subscribers: MapSet.put(state.subscribers, {pid, ref})}}
+    end
   end
 
   @impl true
