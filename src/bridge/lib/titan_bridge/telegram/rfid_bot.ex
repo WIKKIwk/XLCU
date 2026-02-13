@@ -334,8 +334,14 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp start_scan_with_erp_check(token, chat_id, mode) do
     case ErpClient.ping() do
       {:ok, _} ->
-        # Kick an immediate ERP sync so EPC->draft cache warms up before first scans.
-        ErpSyncWorker.sync_now(false)
+        # Preload full draft cache before scanning so EPC->draft match can be instant.
+        case ErpSyncWorker.sync_now_blocking(true, scan_preload_timeout_ms()) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("RFID preload sync xato: #{inspect(reason)}")
+        end
 
         if mode == :recovered do
           send_message(
@@ -1357,6 +1363,13 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp poll_timeout do
     Application.get_env(:titan_bridge, __MODULE__, [])
     |> Keyword.get(:poll_timeout_sec, @poll_timeout_default)
+  end
+
+  defp scan_preload_timeout_ms do
+    case Integer.parse(to_string(System.get_env("LCE_SCAN_PRELOAD_TIMEOUT_MS") || "")) do
+      {n, _} when n >= 1_000 and n <= 120_000 -> n
+      _ -> 30_000
+    end
   end
 
   # --- Inline cache (drafts) ---

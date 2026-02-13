@@ -27,13 +27,13 @@ config :titan_bridge, TitanBridge.Telegram.RfidBot,
 
 # --- RFID Listener ---
 config :titan_bridge, TitanBridge.RfidListener,
-  poll_interval_ms: String.to_integer(System.get_env("LCE_RFID_LISTEN_MS", "250"))
+  poll_interval_ms: String.to_integer(System.get_env("LCE_RFID_LISTEN_MS", "50"))
 
 # --- ERP Sync ---
 # poll_interval_ms: how often to sync with ERPNext (ms)
 # full_refresh_every: do a full (not incremental) sync every N cycles
 config :titan_bridge, TitanBridge.ErpSyncWorker,
-  poll_interval_ms: String.to_integer(System.get_env("LCE_SYNC_INTERVAL_MS", "10000")),
+  poll_interval_ms: String.to_integer(System.get_env("LCE_SYNC_INTERVAL_MS", "180000")),
   full_refresh_every: String.to_integer(System.get_env("LCE_SYNC_FULL_EVERY", "6"))
 
 # --- Core Device Hub ---

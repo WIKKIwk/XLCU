@@ -26,6 +26,10 @@ defmodule TitanBridge.ErpSyncWorker do
     GenServer.cast(__MODULE__, {:sync_now, full_refresh})
   end
 
+  def sync_now_blocking(full_refresh \\ true, timeout \\ 30_000) do
+    GenServer.call(__MODULE__, {:sync_now_blocking, full_refresh}, timeout)
+  end
+
   def handle_webhook(payload) when is_map(payload) do
     GenServer.cast(__MODULE__, {:webhook, payload})
   end
@@ -50,6 +54,19 @@ defmodule TitanBridge.ErpSyncWorker do
     end
 
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_call({:sync_now_blocking, full_refresh}, _from, state) do
+    result =
+      if configured?() do
+        sync_all(full_refresh)
+        :ok
+      else
+        {:error, "ERP config missing"}
+      end
+
+    {:reply, result, state}
   end
 
   @impl true
