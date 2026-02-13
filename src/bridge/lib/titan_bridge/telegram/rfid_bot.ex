@@ -139,7 +139,11 @@ defmodule TitanBridge.Telegram.RfidBot do
       if is_binary(token) and token != "" and is_integer(chat_id) do
         case result do
           {:ok, %{drafts: drafts, epcs: epcs}} ->
-            send_message(token, chat_id, "Draft cache saqlandi: #{drafts} ta draft, #{epcs} ta EPC.")
+            send_message(
+              token,
+              chat_id,
+              "Draft cache saqlandi: #{drafts} ta draft, #{epcs} ta EPC."
+            )
 
           {:error, reason} ->
             send_message(token, chat_id, "Draft cache yuklanmadi: #{inspect(reason)}")
@@ -165,7 +169,6 @@ defmodule TitanBridge.Telegram.RfidBot do
         Logger.debug("RFID bot poll error: #{inspect(err)}")
     end
   end
-
 
   defp handle_update(token, %{
          "message" =>
@@ -434,12 +437,19 @@ defmodule TitanBridge.Telegram.RfidBot do
 
         case refresh_draft_cache(true) do
           {:ok, %{drafts: drafts, epcs: epcs}} ->
-            send_message(token, chat_id, "Draft cache saqlandi: #{drafts} ta draft, #{epcs} ta EPC.")
+            send_message(
+              token,
+              chat_id,
+              "Draft cache saqlandi: #{drafts} ta draft, #{epcs} ta EPC."
+            )
+
             do_scan(token, chat_id)
 
           {:error, reason} ->
             keyboard = %{
-              "inline_keyboard" => [[%{"text" => "Qayta urinish", "callback_data" => "retry_scan"}]]
+              "inline_keyboard" => [
+                [%{"text" => "Qayta urinish", "callback_data" => "retry_scan"}]
+              ]
             }
 
             send_message(
@@ -1197,6 +1207,7 @@ defmodule TitanBridge.Telegram.RfidBot do
 
   defp handle_tag_scan(raw_epc) do
     epc = normalize_epc(raw_epc)
+
     if epc == "" do
       :ok
     else
@@ -1268,7 +1279,13 @@ defmodule TitanBridge.Telegram.RfidBot do
         doc = draft.data || %{}
         summary = draft_from_doc(draft.name, doc)
 
-        if Enum.member?(summary.epcs, epc) do
+        normalized_epcs =
+          summary.epcs
+          |> Enum.map(&normalize_epc/1)
+          |> Enum.filter(&(&1 != ""))
+          |> Enum.uniq()
+
+        if Enum.member?(normalized_epcs, epc) do
           {:ok, %{name: draft.name, doc: doc}}
         else
           nil
@@ -1327,7 +1344,12 @@ defmodule TitanBridge.Telegram.RfidBot do
 
       {:error, reason} ->
         Logger.warning("RFID submit xato: #{name} — #{inspect(reason)}")
-        stop_scanning_erp_down(token, chats, reason)
+
+        if is_binary(token) and byte_size(token) > 0 and is_list(chats) and chats != [] do
+          stop_scanning_erp_down(token, chats, reason)
+        else
+          :ok
+        end
     end
   end
 
@@ -1522,7 +1544,14 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp ensure_table!(name) do
     case :ets.whereis(name) do
       :undefined ->
-        :ets.new(name, [:named_table, :public, :set, read_concurrency: true, write_concurrency: true])
+        :ets.new(name, [
+          :named_table,
+          :public,
+          :set,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+
         :ok
 
       _tid ->
@@ -1691,7 +1720,11 @@ defmodule TitanBridge.Telegram.RfidBot do
           |> Enum.map(& &1["name"])
           |> Enum.filter(&is_binary/1)
           |> Enum.uniq()
-          |> Task.async_stream(&draft_summary/1, ordered: false, max_concurrency: 6, timeout: 20_000)
+          |> Task.async_stream(&draft_summary/1,
+            ordered: false,
+            max_concurrency: 6,
+            timeout: 20_000
+          )
           |> Enum.reduce([], fn
             {:ok, draft}, acc -> [draft | acc]
             _, acc -> acc
@@ -1719,6 +1752,7 @@ defmodule TitanBridge.Telegram.RfidBot do
         |> Enum.reduce(%{}, fn
           {epc, %{name: name, doc: doc}}, acc when is_binary(name) ->
             prev = Map.get(acc, name, %{doc: %{}, epcs: []})
+
             merged_doc =
               if map_size(prev.doc || %{}) > 0 do
                 prev.doc
@@ -1727,7 +1761,7 @@ defmodule TitanBridge.Telegram.RfidBot do
               end
 
             merged_epcs =
-              [to_string(epc || "") | (prev.epcs || [])]
+              [to_string(epc || "") | prev.epcs || []]
               |> Enum.filter(&(&1 != ""))
 
             Map.put(acc, name, %{doc: merged_doc, epcs: merged_epcs})
@@ -1752,14 +1786,14 @@ defmodule TitanBridge.Telegram.RfidBot do
   end
 
   defp draft_from_doc(name, doc) when is_map(doc) do
-    items = doc["items"] || []
+    items = doc["items"] || doc[:items] || []
 
     epcs =
       items
       |> Enum.flat_map(fn item ->
-        barcode = String.trim(item["barcode"] || "")
-        batch = String.trim(item["batch_no"] || "")
-        serial = String.trim(item["serial_no"] || "")
+        barcode = String.trim(item["barcode"] || item[:barcode] || "")
+        batch = String.trim(item["batch_no"] || item[:batch_no] || "")
+        serial = String.trim(item["serial_no"] || item[:serial_no] || "")
 
         serials =
           if serial != "" do
@@ -1775,22 +1809,22 @@ defmodule TitanBridge.Telegram.RfidBot do
       end)
 
     epcs =
-      case extract_epc_from_remarks(doc["remarks"]) do
+      case extract_epc_from_remarks(doc["remarks"] || doc[:remarks]) do
         nil -> epcs
         remark_epc -> [remark_epc | epcs]
       end
 
     %{
-      name: doc["name"] || name,
+      name: doc["name"] || doc[:name] || name,
       items:
         Enum.map(items, fn item ->
           %{
-            item_code: item["item_code"],
-            qty: item["qty"],
-            serial_no: item["serial_no"],
-            batch_no: item["batch_no"],
-            barcode: item["barcode"],
-            s_warehouse: item["s_warehouse"]
+            item_code: item["item_code"] || item[:item_code],
+            qty: item["qty"] || item[:qty],
+            serial_no: item["serial_no"] || item[:serial_no],
+            batch_no: item["batch_no"] || item[:batch_no],
+            barcode: item["barcode"] || item[:barcode],
+            s_warehouse: item["s_warehouse"] || item[:s_warehouse]
           }
         end),
       epcs: Enum.uniq(epcs)

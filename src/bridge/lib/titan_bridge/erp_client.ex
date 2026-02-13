@@ -469,63 +469,84 @@ defmodule TitanBridge.ErpClient do
           ["Stock Entry Detail", "docstatus", "=", 0]
         ])
 
-      case stock_entry_detail_parent(base, token, fields, barcode_filters, parent) do
-        {:ok, draft_name} ->
-          {:ok, draft_name}
-
-        {:error, reason} ->
-          # If barcode field isn't available, ERP may respond with HTTP 417/validation.
-          # Only treat transport errors as fatal.
-          if is_binary(reason) and String.starts_with?(reason, "ERP GET failed:") do
-            :fallback
-          else
-            {:error, reason}
-          end
-
-        _ ->
-          :fallback
-      end
-      |> case do
+      case find_draft_name_via_details(base, token, fields, parent, epc, barcode_filters) do
         {:ok, _} = ok ->
           ok
 
         {:error, _} = err ->
           err
 
-        :fallback ->
-          # 1) Batch No bo'yicha qidirish (legacy)
-          batch_filters =
-            Jason.encode!([
-              ["Stock Entry Detail", "batch_no", "=", epc],
-              ["Stock Entry Detail", "docstatus", "=", 0]
-            ])
+        :not_found ->
+          case find_draft_name_by_remarks(base, token, epc) do
+            {:ok, _} = ok ->
+              ok
 
-          case stock_entry_detail_parent(base, token, fields, batch_filters, parent) do
-            {:ok, draft_name} ->
-              {:ok, draft_name}
+            :not_found ->
+              # Final fallback: some ERP roles cannot query Stock Entry Detail,
+              # so scan open Stock Entry docs directly and match EPC in items/remarks.
+              find_draft_name_by_items_scan(base, token, epc)
 
-            _ ->
-              # 2) Legacy: serial_no ichidan qidirish
-              filters =
-                Jason.encode!([
-                  ["Stock Entry Detail", "serial_no", "like", "%#{epc}%"],
-                  ["Stock Entry Detail", "docstatus", "=", 0]
-                ])
-
-              case stock_entry_detail_parent(base, token, fields, filters, parent) do
-                {:ok, draft_name} ->
-                  {:ok, draft_name}
-
-                :not_found ->
-                  find_draft_name_by_remarks(base, token, epc)
-
-                {:error, _} = err ->
-                  err
-              end
+            {:error, _} = err ->
+              err
           end
       end
     else
       _ -> {:error, "ERP config missing"}
+    end
+  end
+
+  defp find_draft_name_via_details(base, token, fields, parent, epc, barcode_filters) do
+    case stock_entry_detail_parent(base, token, fields, barcode_filters, parent) do
+      {:ok, draft_name} ->
+        {:ok, draft_name}
+
+      {:error, reason} ->
+        if detail_lookup_fallback?(reason),
+          do: find_draft_name_via_batch_or_serial(base, token, fields, parent, epc),
+          else: {:error, reason}
+
+      :not_found ->
+        find_draft_name_via_batch_or_serial(base, token, fields, parent, epc)
+    end
+  end
+
+  defp find_draft_name_via_batch_or_serial(base, token, fields, parent, epc) do
+    batch_filters =
+      Jason.encode!([
+        ["Stock Entry Detail", "batch_no", "=", epc],
+        ["Stock Entry Detail", "docstatus", "=", 0]
+      ])
+
+    case stock_entry_detail_parent(base, token, fields, batch_filters, parent) do
+      {:ok, draft_name} ->
+        {:ok, draft_name}
+
+      {:error, reason} ->
+        if detail_lookup_fallback?(reason),
+          do: find_draft_name_via_serial(base, token, fields, parent, epc),
+          else: {:error, reason}
+
+      :not_found ->
+        find_draft_name_via_serial(base, token, fields, parent, epc)
+    end
+  end
+
+  defp find_draft_name_via_serial(base, token, fields, parent, epc) do
+    filters =
+      Jason.encode!([
+        ["Stock Entry Detail", "serial_no", "like", "%#{epc}%"],
+        ["Stock Entry Detail", "docstatus", "=", 0]
+      ])
+
+    case stock_entry_detail_parent(base, token, fields, filters, parent) do
+      {:ok, draft_name} ->
+        {:ok, draft_name}
+
+      {:error, reason} ->
+        if detail_lookup_fallback?(reason), do: :not_found, else: {:error, reason}
+
+      :not_found ->
+        :not_found
     end
   end
 
@@ -574,6 +595,12 @@ defmodule TitanBridge.ErpClient do
     String.contains?(reason, "Unknown column 'tabStock Entry.parenttype'") or
       String.contains?(reason, "Unknown column \\\"tabStock Entry.parenttype\\\"")
   end
+
+  defp detail_lookup_fallback?(reason) when is_binary(reason) do
+    String.starts_with?(reason, "ERP GET failed:")
+  end
+
+  defp detail_lookup_fallback?(_), do: false
 
   def epc_exists?(epc) when is_binary(epc) do
     filters = Jason.encode!([["LCE Draft", "epc_code", "=", epc]])
@@ -801,6 +828,94 @@ defmodule TitanBridge.ErpClient do
     end
   end
 
+  defp find_draft_name_by_items_scan(base, token, epc) when is_binary(epc) do
+    normalized_epc = normalize_epc(epc)
+
+    if normalized_epc == "" do
+      :not_found
+    else
+      filters = [["Stock Entry", "docstatus", "=", 0]]
+      fields = ["name", "modified"]
+
+      case fetch_all(base, token, "Stock Entry", fields, filters, 0, []) do
+        {:ok, rows} ->
+          rows
+          |> Enum.filter(&is_binary(&1["name"]))
+          |> Enum.sort_by(&to_string(&1["modified"] || ""), :desc)
+          |> Enum.map(& &1["name"])
+          |> Enum.take(300)
+          |> Task.async_stream(
+            fn name -> stock_entry_matches_epc?(base, token, name, normalized_epc) end,
+            ordered: false,
+            max_concurrency: 8,
+            timeout: min(max(erp_timeout_ms(), 5_000), 20_000)
+          )
+          |> Enum.find_value(:not_found, fn
+            {:ok, {:ok, name}} -> {:ok, name}
+            _ -> nil
+          end)
+
+        _ ->
+          :not_found
+      end
+    end
+  end
+
+  defp stock_entry_matches_epc?(base, token, name, normalized_epc)
+       when is_binary(name) and is_binary(normalized_epc) do
+    url = base <> "/api/resource/Stock%20Entry/" <> URI.encode(name)
+
+    case http_get(url, token) do
+      {:ok, %{"data" => doc}} when is_map(doc) ->
+        if stock_entry_doc_has_epc?(doc, normalized_epc) do
+          {:ok, name}
+        else
+          :not_found
+        end
+
+      _ ->
+        :not_found
+    end
+  end
+
+  defp stock_entry_doc_has_epc?(doc, normalized_epc)
+       when is_map(doc) and is_binary(normalized_epc) do
+    items = doc["items"] || []
+
+    item_epcs =
+      items
+      |> Enum.flat_map(fn item ->
+        barcode = normalize_epc(item["barcode"] || "")
+        batch = normalize_epc(item["batch_no"] || "")
+        serial = to_string(item["serial_no"] || "")
+
+        serials =
+          if String.trim(serial) == "" do
+            []
+          else
+            serial
+            |> String.split(~r/[\s,]+/, trim: true)
+            |> Enum.map(&normalize_epc/1)
+          end
+
+        [barcode, batch | serials]
+      end)
+
+    remark_epcs =
+      case extract_epc_from_remarks(doc["remarks"]) do
+        epc when is_binary(epc) -> [normalize_epc(epc)]
+        _ -> []
+      end
+
+    item_epcs
+    |> Kernel.++(remark_epcs)
+    |> Enum.filter(&(&1 != ""))
+    |> Enum.uniq()
+    |> Enum.member?(normalized_epc)
+  end
+
+  defp stock_entry_doc_has_epc?(_, _), do: false
+
   defp extract_epc_from_remarks(remarks) when is_binary(remarks) do
     text =
       remarks
@@ -814,6 +929,14 @@ defmodule TitanBridge.ErpClient do
   end
 
   defp extract_epc_from_remarks(_), do: nil
+
+  defp normalize_epc(raw) do
+    raw
+    |> to_string()
+    |> String.trim()
+    |> String.upcase()
+    |> String.replace(~r/[^0-9A-F]/, "")
+  end
 
   defp put_doc(doctype, name, attrs) do
     with %{erp_url: base, erp_token: token} <- get_config(),
