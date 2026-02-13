@@ -19,8 +19,11 @@ defmodule TitanBridge.Telegram.RfidBot do
 
   @state_table :rfid_tg_state
   @temp_table :rfid_tg_temp
+  @inflight_table :rfid_tg_inflight
+  @miss_table :rfid_tg_miss
   @poll_default_ms 1200
   @poll_timeout_default 25
+  @miss_ttl_default_ms 300
   @drafts_cache_ttl_ms 60_000
   @submit_page_size 8
 
@@ -31,6 +34,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   @impl true
   def init(_) do
     ChatState.init_tables!(@state_table, @temp_table)
+    init_runtime_tables!()
     schedule_poll(poll_interval())
     {:ok, %{}}
   end
@@ -1095,58 +1099,46 @@ defmodule TitanBridge.Telegram.RfidBot do
 
   defp handle_tag_scan(raw_epc) do
     epc = normalize_epc(raw_epc)
-    # Dublikat filtr: soniyasiga 20+ marta kelishi mumkin
-    # Faqat yangi EPC lar PostgreSQL ga yoziladi va lokal cache orqali tekshiriladi
-    case EpcRegistry.register_once(epc) do
-      {:ok, :new} ->
-        Logger.debug("RFID yangi EPC: #{epc}")
-        Task.start(fn -> search_and_submit(epc) end)
-
-      {:ok, :exists} ->
-        # Allaqachon ko'rilgan EPC — skip
-        :ok
-    end
-  end
-
-  defp search_and_submit(epc) do
-    token = get_rfid_token()
-    chats = scanning_chats()
-
-    if chats == [] or is_nil(token) do
+    if epc == "" do
       :ok
     else
-      # 1) Avval lokal cache dan qidirish (ETS — bir zumda)
-      # 2) Topilmasa — ERPNext dan qidirish (fallback)
-      case find_draft_by_epc(epc) do
-        {:ok, draft_info} ->
-          do_submit(draft_info.name, draft_info.doc, epc, token, chats)
-
-        :not_found ->
+      cond do
+        recently_missed?(epc) ->
           :ok
 
-        {:error, reason} ->
-          Logger.warning("RFID EPC qidirish xato: #{inspect(reason)}")
+        true ->
+          case find_draft_by_epc(epc) do
+            {:ok, draft_info} ->
+              clear_miss(epc)
 
-          if non_fatal_lookup_error?(reason) do
-            # Permission/policy muammosida butun skanni to'xtatib yubormaymiz.
-            # Qurilma ishlashi davom etadi; mos EPC lokal cache'dan topilsa submit bo'ladi.
-            :ok
-          else
-            stop_scanning_erp_down(token, chats, reason)
+              if mark_inflight(epc) do
+                Logger.debug("RFID yangi EPC: #{epc}")
+                Task.start(fn -> search_and_submit(epc, draft_info) end)
+              else
+                :ok
+              end
+
+            :not_found ->
+              remember_miss(epc)
+              :ok
           end
       end
     end
   end
 
-  defp non_fatal_lookup_error?(reason) do
-    text =
-      case reason do
-        r when is_binary(r) -> r
-        r -> inspect(r)
-      end
+  defp search_and_submit(epc, draft_info) do
+    try do
+      token = get_rfid_token()
+      chats = scanning_chats()
 
-    String.contains?(text, "ERP GET failed: 403") or
-      String.contains?(text, "PermissionError")
+      if chats == [] or is_nil(token) do
+        :ok
+      else
+        do_submit(draft_info.name, draft_info.doc, epc, token, chats)
+      end
+    after
+      clear_inflight(epc)
+    end
   end
 
   # Gibrid qidirish: lokal cache → ERPNext fallback
@@ -1167,7 +1159,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp do_submit(name, doc, epc, token, chats) do
     case ErpClient.submit_stock_entry(name) do
       {:ok, _} ->
-        EpcRegistry.mark_submitted(epc)
+        Task.start(fn -> EpcRegistry.mark_submitted(epc) end)
         # Lokal cache dan olib tashlaymiz — qayta submit bo'lmasin
         Cache.delete_epc_mapping(epc)
         Logger.info("RFID auto-submit: #{name} (EPC: #{epc})")
@@ -1334,6 +1326,60 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp set_offset(update), do: ChatState.set_offset(@temp_table, update)
 
   # --- Config ---
+
+  defp init_runtime_tables! do
+    ensure_table!(@inflight_table)
+    ensure_table!(@miss_table)
+  end
+
+  defp ensure_table!(name) do
+    case :ets.whereis(name) do
+      :undefined ->
+        :ets.new(name, [:named_table, :public, :set, read_concurrency: true, write_concurrency: true])
+        :ok
+
+      _tid ->
+        :ok
+    end
+  end
+
+  defp mark_inflight(epc) do
+    :ets.insert_new(@inflight_table, {epc, System.monotonic_time(:millisecond)})
+  end
+
+  defp clear_inflight(epc), do: :ets.delete(@inflight_table, epc)
+
+  defp remember_miss(epc) do
+    :ets.insert(@miss_table, {epc, System.monotonic_time(:millisecond)})
+    :ok
+  end
+
+  defp clear_miss(epc), do: :ets.delete(@miss_table, epc)
+
+  defp recently_missed?(epc) do
+    now = System.monotonic_time(:millisecond)
+    ttl = miss_ttl_ms()
+
+    case :ets.lookup(@miss_table, epc) do
+      [{^epc, ts}] ->
+        if now - ts < ttl do
+          true
+        else
+          :ets.delete(@miss_table, epc)
+          false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp miss_ttl_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_MISS_TTL_MS") || "")) do
+      {n, _} when n >= 0 and n <= 5_000 -> n
+      _ -> @miss_ttl_default_ms
+    end
+  end
 
   defp schedule_poll(ms) do
     Process.send_after(self(), :poll, ms)
