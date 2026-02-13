@@ -27,7 +27,7 @@ config :titan_bridge, TitanBridge.Telegram.RfidBot,
 
 # --- RFID Listener ---
 config :titan_bridge, TitanBridge.RfidListener,
-  poll_interval_ms: String.to_integer(System.get_env("LCE_RFID_LISTEN_MS", "1000"))
+  poll_interval_ms: String.to_integer(System.get_env("LCE_RFID_LISTEN_MS", "250"))
 
 # --- ERP Sync ---
 # poll_interval_ms: how often to sync with ERPNext (ms)

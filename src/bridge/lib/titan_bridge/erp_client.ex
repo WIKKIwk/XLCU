@@ -441,6 +441,21 @@ defmodule TitanBridge.ErpClient do
     {:error, ...}  — xato
   """
   def find_draft_by_serial_no(epc) when is_binary(epc) do
+    case find_open_draft_name_by_epc(epc) do
+      {:ok, name} -> get_doc("Stock Entry", name)
+      other -> other
+    end
+  end
+
+  @doc """
+  EPC bo'yicha faqat OCHIQ (docstatus=0) Stock Entry nomini topadi.
+
+  Qaytaradi:
+    {:ok, name}   — topildi
+    :not_found    — mos draft yo'q
+    {:error, ...} — xato
+  """
+  def find_open_draft_name_by_epc(epc) when is_binary(epc) do
     with %{erp_url: base, erp_token: token} <- get_config(),
          true <- valid?(base, token),
          base <- normalize_base(base) do
@@ -451,22 +466,12 @@ defmodule TitanBridge.ErpClient do
       barcode_filters =
         Jason.encode!([
           ["Stock Entry Detail", "barcode", "=", epc],
-          ["Stock Entry", "docstatus", "=", 0]
+          ["Stock Entry Detail", "docstatus", "=", 0]
         ])
 
-      barcode_url =
-        base <>
-          "/api/resource/Stock%20Entry%20Detail?fields=" <>
-          URI.encode(fields) <>
-          "&filters=" <>
-          URI.encode(barcode_filters) <>
-          "&parent=" <>
-          parent <>
-          "&limit_page_length=1"
-
-      case http_get(barcode_url, token) do
-        {:ok, %{"data" => [%{"parent" => parent} | _]}} ->
-          get_doc("Stock Entry", parent)
+      case stock_entry_detail_parent(base, token, fields, barcode_filters, parent) do
+        {:ok, draft_name} ->
+          {:ok, draft_name}
 
         {:error, reason} ->
           # If barcode field isn't available, ERP may respond with HTTP 417/validation.
@@ -492,51 +497,27 @@ defmodule TitanBridge.ErpClient do
           batch_filters =
             Jason.encode!([
               ["Stock Entry Detail", "batch_no", "=", epc],
-              ["Stock Entry", "docstatus", "=", 0]
+              ["Stock Entry Detail", "docstatus", "=", 0]
             ])
 
-          batch_url =
-            base <>
-              "/api/resource/Stock%20Entry%20Detail?fields=" <>
-              URI.encode(fields) <>
-              "&filters=" <>
-              URI.encode(batch_filters) <>
-              "&parent=" <>
-              parent <>
-              "&limit_page_length=1"
-
-          case http_get(batch_url, token) do
-            {:ok, %{"data" => [%{"parent" => parent} | _]}} ->
-              get_doc("Stock Entry", parent)
+          case stock_entry_detail_parent(base, token, fields, batch_filters, parent) do
+            {:ok, draft_name} ->
+              {:ok, draft_name}
 
             _ ->
               # 2) Legacy: serial_no ichidan qidirish
               filters =
                 Jason.encode!([
                   ["Stock Entry Detail", "serial_no", "like", "%#{epc}%"],
-                  ["Stock Entry", "docstatus", "=", 0]
+                  ["Stock Entry Detail", "docstatus", "=", 0]
                 ])
 
-              url =
-                base <>
-                  "/api/resource/Stock%20Entry%20Detail?fields=" <>
-                  URI.encode(fields) <>
-                  "&filters=" <>
-                  URI.encode(filters) <>
-                  "&parent=" <>
-                  parent <>
-                  "&limit_page_length=1"
+              case stock_entry_detail_parent(base, token, fields, filters, parent) do
+                {:ok, draft_name} ->
+                  {:ok, draft_name}
 
-              case http_get(url, token) do
-                {:ok, %{"data" => [%{"parent" => parent} | _]}} ->
-                  # To'liq Stock Entry ni olish
-                  get_doc("Stock Entry", parent)
-
-                {:ok, %{"data" => []}} ->
-                  find_draft_by_remarks(base, token, epc)
-
-                {:ok, _} ->
-                  find_draft_by_remarks(base, token, epc)
+                :not_found ->
+                  find_draft_name_by_remarks(base, token, epc)
 
                 {:error, _} = err ->
                   err
@@ -546,6 +527,52 @@ defmodule TitanBridge.ErpClient do
     else
       _ -> {:error, "ERP config missing"}
     end
+  end
+
+  defp stock_entry_detail_parent(base, token, fields, filters, parent) do
+    with_parent =
+      base <>
+        "/api/resource/Stock%20Entry%20Detail?fields=" <>
+        URI.encode(fields) <>
+        "&filters=" <>
+        URI.encode(filters) <>
+        "&parent=" <>
+        parent <>
+        "&limit_page_length=1"
+
+    without_parent =
+      base <>
+        "/api/resource/Stock%20Entry%20Detail?fields=" <>
+        URI.encode(fields) <>
+        "&filters=" <>
+        URI.encode(filters) <>
+        "&limit_page_length=1"
+
+    case http_get(with_parent, token) do
+      {:error, reason} when is_binary(reason) ->
+        if parent_join_bug?(reason) do
+          parse_stock_entry_detail_parent(http_get(without_parent, token))
+        else
+          {:error, reason}
+        end
+
+      other ->
+        parse_stock_entry_detail_parent(other)
+    end
+  end
+
+  defp parse_stock_entry_detail_parent({:ok, %{"data" => [%{"parent" => draft_name} | _]}})
+       when is_binary(draft_name) do
+    {:ok, draft_name}
+  end
+
+  defp parse_stock_entry_detail_parent({:ok, %{"data" => []}}), do: :not_found
+  defp parse_stock_entry_detail_parent({:ok, _}), do: :not_found
+  defp parse_stock_entry_detail_parent({:error, _} = err), do: err
+
+  defp parent_join_bug?(reason) when is_binary(reason) do
+    String.contains?(reason, "Unknown column 'tabStock Entry.parenttype'") or
+      String.contains?(reason, "Unknown column \\\"tabStock Entry.parenttype\\\"")
   end
 
   def epc_exists?(epc) when is_binary(epc) do
@@ -742,7 +769,7 @@ defmodule TitanBridge.ErpClient do
     end
   end
 
-  defp find_draft_by_remarks(base, token, epc) when is_binary(epc) do
+  defp find_draft_name_by_remarks(base, token, epc) when is_binary(epc) do
     epc = String.trim(epc)
 
     if epc == "" do
@@ -766,7 +793,7 @@ defmodule TitanBridge.ErpClient do
 
       case http_get(url, token) do
         {:ok, %{"data" => [%{"name" => name} | _]}} when is_binary(name) ->
-          get_doc("Stock Entry", name)
+          {:ok, name}
 
         _ ->
           :not_found

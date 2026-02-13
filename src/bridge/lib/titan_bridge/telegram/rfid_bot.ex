@@ -14,7 +14,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   use GenServer
   require Logger
 
-  alias TitanBridge.{SettingsStore, ErpClient, RfidListener, EpcRegistry, Cache}
+  alias TitanBridge.{SettingsStore, ErpClient, RfidListener, EpcRegistry, Cache, ErpSyncWorker}
   alias TitanBridge.Telegram.{ChatState, SetupUtils, Transport}
 
   @state_table :rfid_tg_state
@@ -334,6 +334,9 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp start_scan_with_erp_check(token, chat_id, mode) do
     case ErpClient.ping() do
       {:ok, _} ->
+        # Kick an immediate ERP sync so EPC->draft cache warms up before first scans.
+        ErpSyncWorker.sync_now(false)
+
         if mode == :recovered do
           send_message(
             token,
@@ -1096,7 +1099,7 @@ defmodule TitanBridge.Telegram.RfidBot do
     case EpcRegistry.register_once(epc) do
       {:ok, :new} ->
         Logger.info("RFID yangi EPC: #{epc}")
-        search_and_submit(epc)
+        Task.start(fn -> search_and_submit(epc) end)
 
       {:ok, :exists} ->
         # Allaqachon ko'rilgan EPC — skip
@@ -1158,9 +1161,9 @@ defmodule TitanBridge.Telegram.RfidBot do
         # Lokal cache da yo'q — ERPNext dan tekshiramiz (yangi draft bo'lishi mumkin)
         Logger.debug("RFID EPC lokal cache da yo'q, ERPNext dan qidirilmoqda: #{epc}")
 
-        case ErpClient.find_draft_by_serial_no(epc) do
-          {:ok, doc} ->
-            {:ok, %{name: doc["name"], doc: doc}}
+        case ErpClient.find_open_draft_name_by_epc(epc) do
+          {:ok, name} when is_binary(name) ->
+            {:ok, %{name: name, doc: nil}}
 
           :not_found ->
             :not_found
@@ -1186,16 +1189,18 @@ defmodule TitanBridge.Telegram.RfidBot do
           |> Enum.map(fn i -> "#{i["item_code"]}: #{i["qty"]}" end)
           |> Enum.join(", ")
 
+        submit_text =
+          if String.trim(items_text) == "" do
+            "#{name} submitted!\nEPC: #{String.slice(epc, 0, 16)}..."
+          else
+            "#{name} submitted!\n#{items_text}\nEPC: #{String.slice(epc, 0, 16)}..."
+          end
+
         Enum.each(chats, fn chat_id ->
           old_count = get_temp(chat_id, "submitted_count") || 0
           put_temp(chat_id, "submitted_count", old_count + 1)
 
-          send_message(
-            token,
-            chat_id,
-            "#{name} submitted!\n#{items_text}\n" <>
-              "EPC: #{String.slice(epc, 0, 16)}..."
-          )
+          send_message(token, chat_id, submit_text)
         end)
 
       {:error, reason} ->
