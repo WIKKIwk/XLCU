@@ -12,6 +12,7 @@ defmodule TitanBridge.RfidListener do
   alias TitanBridge.SettingsStore
 
   @poll_default_ms 1000
+  @event_dedupe_default_ms 300
 
   def start_link(_args) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -28,7 +29,7 @@ defmodule TitanBridge.RfidListener do
   @impl true
   def init(_) do
     schedule_poll(poll_interval())
-    {:ok, %{subscribers: MapSet.new(), last_epc: nil, last_seen_at: nil}}
+    {:ok, %{subscribers: MapSet.new(), last_epc: nil, last_seen_at: nil, last_emitted_ms: 0}}
   end
 
   @impl true
@@ -66,9 +67,26 @@ defmodule TitanBridge.RfidListener do
   defp poll_rfid(state) do
     case fetch_last_tag() do
       {:ok, epc, seen_at} when is_binary(epc) and epc != "" ->
-        if epc != state.last_epc or seen_at != state.last_seen_at do
+        now_ms = System.monotonic_time(:millisecond)
+        dedupe_ms = event_dedupe_ms()
+        elapsed = now_ms - (state.last_emitted_ms || 0)
+
+        should_emit? =
+          cond do
+            epc != state.last_epc ->
+              true
+
+            # Same EPC: suppress high-frequency repeats even if reader updates seenAt constantly.
+            elapsed < dedupe_ms ->
+              false
+
+            true ->
+              seen_at != state.last_seen_at
+          end
+
+        if should_emit? do
           notify_subscribers(state.subscribers, epc)
-          %{state | last_epc: epc, last_seen_at: seen_at}
+          %{state | last_epc: epc, last_seen_at: seen_at, last_emitted_ms: now_ms}
         else
           state
         end
@@ -128,5 +146,12 @@ defmodule TitanBridge.RfidListener do
   defp poll_interval do
     Application.get_env(:titan_bridge, __MODULE__, [])
     |> Keyword.get(:poll_interval_ms, @poll_default_ms)
+  end
+
+  defp event_dedupe_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_EVENT_DEDUPE_MS") || "")) do
+      {n, _} when n >= 0 and n <= 5_000 -> n
+      _ -> @event_dedupe_default_ms
+    end
   end
 end

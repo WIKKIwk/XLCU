@@ -43,6 +43,7 @@ ZEBRA_AUTOPRINT_ENABLED="${ZEBRA_AUTOPRINT_ENABLED:-0}"
 ZEBRA_FEED_AFTER_ENCODE="${ZEBRA_FEED_AFTER_ENCODE:-0}"
 ZEBRA_PRINTER_SIMULATE="${ZEBRA_PRINTER_SIMULATE:-}"
 RFID_SCAN_SUBNETS="${RFID_SCAN_SUBNETS:-}"
+LCE_RFID_FORCE_LOCAL_PROFILE="${LCE_RFID_FORCE_LOCAL_PROFILE:-1}"
 TG_TOKEN="${TG_TOKEN:-}"
 
 LCE_MIX_CACHE_DIR="${LCE_MIX_CACHE_DIR:-${WORK_DIR}/.cache/lce-mix}"
@@ -507,6 +508,85 @@ core_agent_enabled() {
   esac
 }
 
+force_rfid_local_profile() {
+  if ! as_bool "${LCE_RFID_FORCE_LOCAL_PROFILE:-1}"; then
+    return 0
+  fi
+
+  local target="${LCE_CHILDREN_TARGET:-zebra}"
+  local target_lc="${target,,}"
+  if [[ "${target_lc}" != "all" && "${target_lc}" != *"rfid"* ]]; then
+    return 0
+  fi
+
+  local dir="${RFID_DIR:-}"
+  if [[ -z "${dir}" || ! -d "${dir}" ]]; then
+    return 0
+  fi
+
+  local cfg="${dir}/Demo/web-localhost/server/local-config.json"
+  local py
+  py="$(python_bin 2>/dev/null || true)"
+  if [[ -z "${py}" ]]; then
+    echo "WARNING: python topilmadi, RFID local profile auto-fix o'tkazib yuborildi." >&2
+    return 0
+  fi
+
+  "${py}" - "${cfg}" <<'PY'
+import json
+import socket
+import sys
+from pathlib import Path
+
+cfg_path = Path(sys.argv[1])
+cfg_path.parent.mkdir(parents=True, exist_ok=True)
+
+data = {}
+if cfg_path.exists():
+  try:
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+      data = {}
+  except Exception:
+    data = {}
+
+erp = data.get("erp")
+if not isinstance(erp, dict):
+  erp = {}
+
+profiles = erp.get("profiles")
+if not isinstance(profiles, dict):
+  profiles = {}
+
+local_profile = profiles.get("local")
+if not isinstance(local_profile, dict):
+  local_profile = {}
+
+host = socket.gethostname() or "uhf-local"
+device = str(local_profile.get("device") or erp.get("device") or host).strip() or host
+agent_id = str(local_profile.get("agentId") or erp.get("agentId") or device).strip() or device
+
+local_profile["baseUrl"] = ""
+local_profile["auth"] = ""
+local_profile["device"] = device
+local_profile["agentId"] = agent_id
+local_profile["pushEnabled"] = False
+local_profile["rpcEnabled"] = False
+local_profile["overrideEnv"] = True
+profiles["local"] = local_profile
+
+erp["profiles"] = profiles
+erp["activeProfile"] = "local"
+erp["pushEnabled"] = False
+erp["rpcEnabled"] = False
+if "overrideEnv" not in erp:
+  erp["overrideEnv"] = True
+
+data["erp"] = erp
+cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 start_zebra_tui() {
   if [[ ! -t 0 || ! -t 1 ]]; then
     return 1
@@ -769,6 +849,8 @@ fi
 if [[ -z "${RFID_SCAN_SUBNETS}" ]]; then
   RFID_SCAN_SUBNETS="$(detect_host_subnets)"
 fi
+
+force_rfid_local_profile
 
 LCE_DOCKER_PRIVILEGED="$(to_compose_bool "${LCE_DOCKER_PRIVILEGED}")"
 export LCE_DOCKER_PRIVILEGED

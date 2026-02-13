@@ -1103,6 +1103,9 @@ defmodule TitanBridge.Telegram.RfidBot do
       :ok
     else
       cond do
+        inflight?(epc) ->
+          :ok
+
         recently_missed?(epc) ->
           :ok
 
@@ -1145,8 +1148,6 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp find_draft_by_epc(epc) do
     case Cache.find_draft_by_epc(epc) do
       {:ok, draft_info} ->
-        # Lokal cache dan topildi — tarmoqsiz, bir zumda
-        Logger.debug("RFID EPC lokal cache dan topildi: #{epc}")
         {:ok, draft_info}
 
       :not_found ->
@@ -1157,7 +1158,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   end
 
   defp do_submit(name, doc, epc, token, chats) do
-    case ErpClient.submit_stock_entry(name) do
+    case submit_with_retry(name) do
       {:ok, _} ->
         Task.start(fn -> EpcRegistry.mark_submitted(epc) end)
         # Lokal cache dan olib tashlaymiz — qayta submit bo'lmasin
@@ -1188,6 +1189,53 @@ defmodule TitanBridge.Telegram.RfidBot do
       {:error, reason} ->
         Logger.warning("RFID submit xato: #{name} — #{inspect(reason)}")
         stop_scanning_erp_down(token, chats, reason)
+    end
+  end
+
+  defp submit_with_retry(name) when is_binary(name) do
+    max_retry = submit_retry_count()
+    retry_ms = submit_retry_delay_ms()
+    do_submit_with_retry(name, max_retry, retry_ms, 0)
+  end
+
+  defp do_submit_with_retry(name, max_retry, retry_ms, attempt) do
+    case ErpClient.submit_stock_entry(name) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} = err ->
+        if retryable_submit_error?(reason) and attempt < max_retry do
+          Process.sleep(retry_ms)
+          do_submit_with_retry(name, max_retry, retry_ms, attempt + 1)
+        else
+          err
+        end
+    end
+  end
+
+  defp retryable_submit_error?(reason) do
+    text =
+      case reason do
+        r when is_binary(r) -> r
+        r -> inspect(r)
+      end
+
+    String.contains?(text, "QueryDeadlockError") or
+      String.contains?(text, "Deadlock found when trying to get lock") or
+      String.contains?(text, "Lock wait timeout exceeded")
+  end
+
+  defp submit_retry_count do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_SUBMIT_RETRY") || "")) do
+      {n, _} when n >= 0 and n <= 10 -> n
+      _ -> 2
+    end
+  end
+
+  defp submit_retry_delay_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_SUBMIT_RETRY_MS") || "")) do
+      {n, _} when n >= 10 and n <= 10_000 -> n
+      _ -> 120
     end
   end
 
@@ -1346,6 +1394,8 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp mark_inflight(epc) do
     :ets.insert_new(@inflight_table, {epc, System.monotonic_time(:millisecond)})
   end
+
+  defp inflight?(epc), do: :ets.member(@inflight_table, epc)
 
   defp clear_inflight(epc), do: :ets.delete(@inflight_table, epc)
 
