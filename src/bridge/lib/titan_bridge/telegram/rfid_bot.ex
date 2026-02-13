@@ -6,6 +6,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   Flow:
     /start  → setup wizard: ERP URL → API key → API secret
     /scan   → loads drafts, starts RFID inventory, listens for tags
+    /turbo  → force refresh drafts cache from ERPNext
     /submit → manual submit (no UHF required): pick a draft via inline menu and submit
     /stop   → stops RFID inventory and scanning
     /status → shows current state + RFID reader status
@@ -226,6 +227,10 @@ defmodule TitanBridge.Telegram.RfidBot do
         delete_message(token, chat_id, msg_id)
         handle_list(token, chat_id)
 
+      cmd == "/turbo" ->
+        delete_message(token, chat_id, msg_id)
+        handle_turbo(token, chat_id)
+
       cmd == "/cache" ->
         delete_message(token, chat_id, msg_id)
         handle_cache(token, chat_id)
@@ -372,6 +377,7 @@ defmodule TitanBridge.Telegram.RfidBot do
                 chat_id,
                 "Ulandi!\n\n" <>
                   "/scan — skanerlashni boshlash\n" <>
+                  "/turbo — draft cache ni yangilash\n" <>
                   "/list — draft'lar ro'yxati\n" <>
                   "/status — holat"
               )
@@ -989,6 +995,30 @@ defmodule TitanBridge.Telegram.RfidBot do
 
       send_message(token, chat_id, "Draft'lar (#{length(drafts)}):\n\n#{lines}")
     end
+  end
+
+  # --- /turbo: ERPNext dan draft cache ni majburiy yangilash ---
+
+  defp handle_turbo(token, chat_id) do
+    send_message(token, chat_id, "Turbo rejim: ERPNext dan draft cache yangilanmoqda...")
+
+    Task.start(fn ->
+      case refresh_draft_cache(true) do
+        {:ok, %{drafts: drafts, epcs: epcs}} ->
+          clear_drafts_cache(chat_id, chat_id)
+
+          send_message(
+            token,
+            chat_id,
+            "Turbo tayyor: #{drafts} ta draft, #{epcs} ta EPC cache ga yangilandi."
+          )
+
+        {:error, reason} ->
+          send_message(token, chat_id, "Turbo xato: #{ErpClient.human_error(reason)}")
+      end
+    end)
+
+    :ok
   end
 
   defp list_error_message(reason) do
