@@ -29,6 +29,8 @@ defmodule TitanBridge.Telegram.RfidBot do
   @poll_timeout_default 25
   @miss_ttl_default_ms 300
   @drafts_cache_ttl_ms 60_000
+  @draft_refresh_default_ms 180_000
+  @draft_sync_timeout_default_ms 60_000
   @submit_page_size 8
 
   def start_link(_args) do
@@ -40,7 +42,8 @@ defmodule TitanBridge.Telegram.RfidBot do
     ChatState.init_tables!(@state_table, @temp_table)
     init_runtime_tables!()
     schedule_poll(poll_interval())
-    {:ok, %{poll_inflight: false}}
+    if draft_refresh_interval_ms() > 0, do: schedule_draft_refresh(draft_refresh_interval_ms())
+    {:ok, %{poll_inflight: false, draft_refresh_inflight: false}}
   end
 
   # --- Telegram Polling ---
@@ -67,6 +70,30 @@ defmodule TitanBridge.Telegram.RfidBot do
   def handle_info(:poll_done, state) do
     schedule_poll(poll_interval())
     {:noreply, Map.put(state, :poll_inflight, false)}
+  end
+
+  @impl true
+  def handle_info(:draft_refresh_tick, %{draft_refresh_inflight: true} = state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:draft_refresh_tick, state) do
+    run_draft_refresh_async(full_refresh: false)
+    {:noreply, Map.put(state, :draft_refresh_inflight, true)}
+  end
+
+  @impl true
+  def handle_info({:draft_refresh_done, {:error, reason}}, state) do
+    Logger.warning("RFID draft cache periodic refresh xato: #{inspect(reason)}")
+    if draft_refresh_interval_ms() > 0, do: schedule_draft_refresh(draft_refresh_interval_ms())
+    {:noreply, Map.put(state, :draft_refresh_inflight, false)}
+  end
+
+  @impl true
+  def handle_info({:draft_refresh_done, _result}, state) do
+    if draft_refresh_interval_ms() > 0, do: schedule_draft_refresh(draft_refresh_interval_ms())
+    {:noreply, Map.put(state, :draft_refresh_inflight, false)}
   end
 
   # --- RFID Tag Event ---
@@ -97,6 +124,29 @@ defmodule TitanBridge.Telegram.RfidBot do
       after
         send(parent, :poll_done)
       end
+    end)
+  end
+
+  defp run_draft_refresh_async(opts \\ []) do
+    parent = self()
+    token = Keyword.get(opts, :token)
+    chat_id = Keyword.get(opts, :chat_id)
+    full_refresh = Keyword.get(opts, :full_refresh, true)
+
+    Task.start(fn ->
+      result = refresh_draft_cache(full_refresh)
+
+      if is_binary(token) and token != "" and is_integer(chat_id) do
+        case result do
+          {:ok, %{drafts: drafts, epcs: epcs}} ->
+            send_message(token, chat_id, "Draft cache saqlandi: #{drafts} ta draft, #{epcs} ta EPC.")
+
+          {:error, reason} ->
+            send_message(token, chat_id, "Draft cache yuklanmadi: #{inspect(reason)}")
+        end
+      end
+
+      send(parent, {:draft_refresh_done, result})
     end)
   end
 
@@ -318,6 +368,9 @@ defmodule TitanBridge.Telegram.RfidBot do
                   "/list — draft'lar ro'yxati\n" <>
                   "/status — holat"
               )
+
+              send_message(token, chat_id, "Draft cache ERPNext dan yuklanmoqda...")
+              run_draft_refresh_async(token: token, chat_id: chat_id, full_refresh: true)
             else
               setup_prompt(
                 token,
@@ -371,10 +424,6 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp start_scan_with_erp_check(token, chat_id, mode) do
     case ErpClient.ping() do
       {:ok, _} ->
-        # /scan ni bloklamaslik uchun cache warmup'ni async boshlaymiz.
-        # Sync tugashi kutib o'tirmaymiz; skan darhol ishga tushadi.
-        ErpSyncWorker.sync_now(true)
-
         if mode == :recovered do
           send_message(
             token,
@@ -383,7 +432,23 @@ defmodule TitanBridge.Telegram.RfidBot do
           )
         end
 
-        do_scan(token, chat_id)
+        case refresh_draft_cache(true) do
+          {:ok, %{drafts: drafts, epcs: epcs}} ->
+            send_message(token, chat_id, "Draft cache saqlandi: #{drafts} ta draft, #{epcs} ta EPC.")
+            do_scan(token, chat_id)
+
+          {:error, reason} ->
+            keyboard = %{
+              "inline_keyboard" => [[%{"text" => "Qayta urinish", "callback_data" => "retry_scan"}]]
+            }
+
+            send_message(
+              token,
+              chat_id,
+              "ERP ulandi, lekin draft cache yuklanmadi: #{inspect(reason)}\nQayta urinib ko'ring.",
+              keyboard
+            )
+        end
 
       {:error, _} ->
         keyboard = %{
@@ -1509,6 +1574,10 @@ defmodule TitanBridge.Telegram.RfidBot do
     Process.send_after(self(), :poll, ms)
   end
 
+  defp schedule_draft_refresh(ms) do
+    Process.send_after(self(), :draft_refresh_tick, ms)
+  end
+
   defp poll_interval do
     Application.get_env(:titan_bridge, __MODULE__, [])
     |> Keyword.get(:poll_interval_ms, @poll_default_ms)
@@ -1517,6 +1586,42 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp poll_timeout do
     Application.get_env(:titan_bridge, __MODULE__, [])
     |> Keyword.get(:poll_timeout_sec, @poll_timeout_default)
+  end
+
+  defp draft_refresh_interval_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_DRAFT_REFRESH_MS") || "")) do
+      {n, _} when n >= 0 and n <= 3_600_000 -> n
+      _ -> @draft_refresh_default_ms
+    end
+  end
+
+  defp draft_sync_timeout_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_DRAFT_SYNC_TIMEOUT_MS") || "")) do
+      {n, _} when n >= 5_000 and n <= 300_000 -> n
+      _ -> @draft_sync_timeout_default_ms
+    end
+  end
+
+  defp refresh_draft_cache(full_refresh \\ true) do
+    timeout = draft_sync_timeout_ms()
+
+    case ErpSyncWorker.sync_now_blocking(full_refresh, timeout) do
+      :ok ->
+        {:ok, %{drafts: length(Cache.list_stock_drafts()), epcs: epc_mapping_size()}}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      other ->
+        {:error, other}
+    end
+  end
+
+  defp epc_mapping_size do
+    case :ets.whereis(:lce_cache_epc_drafts) do
+      :undefined -> 0
+      _ -> :ets.info(:lce_cache_epc_drafts, :size) || 0
+    end
   end
 
   # --- Inline cache (drafts) ---
