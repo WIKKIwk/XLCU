@@ -28,7 +28,12 @@ LCE_FORCE_RESTART="${LCE_FORCE_RESTART:-1}"
 LCE_AUTO_FETCH_CHILDREN="${LCE_AUTO_FETCH_CHILDREN:-1}"
 LCE_DRY_RUN="${LCE_DRY_RUN:-0}"
 LCE_DEV_IMAGE="${LCE_DEV_IMAGE:-}"
+LCE_USE_PREBUILT_DEV_IMAGE_USER_SET=0
+if [[ -n "${LCE_USE_PREBUILT_DEV_IMAGE+x}" ]]; then
+  LCE_USE_PREBUILT_DEV_IMAGE_USER_SET=1
+fi
 LCE_USE_PREBUILT_DEV_IMAGE="${LCE_USE_PREBUILT_DEV_IMAGE:-0}"
+LCE_PREBUILT_AUTO="${LCE_PREBUILT_AUTO:-1}"
 LCE_REBUILD_IMAGE="${LCE_REBUILD_IMAGE:-0}"
 LCE_BRIDGE_IMAGE_TARGET="${LCE_BRIDGE_IMAGE_TARGET:-}"
 LCE_ALLOW_TARGET_MISMATCH="${LCE_ALLOW_TARGET_MISMATCH:-0}"
@@ -781,15 +786,32 @@ if [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
   LCE_DEV_IMAGE="lce-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET}"
 fi
 
+# If user did not explicitly choose prebuilt/local mode, try prebuilt images on first run.
+# This makes fresh installs fast on low-spec PCs, while still falling back to local builds.
+LCE_PREBUILT_AUTO_ACTIVE=0
+LCE_LOCAL_DEV_IMAGE="${LCE_DEV_IMAGE}"
+if [[ "${LCE_USE_PREBUILT_DEV_IMAGE_USER_SET}" -eq 0 ]] && [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]] && as_bool "${LCE_PREBUILT_AUTO}"; then
+  if ! as_bool "${LCE_REBUILD_IMAGE}" && ! docker image inspect "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
+    LCE_USE_PREBUILT_DEV_IMAGE="1"
+    LCE_PREBUILT_AUTO_ACTIVE=1
+  fi
+fi
+
 if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}" && [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
   derived_image="$(derive_ghcr_image 2>/dev/null || true)"
   if [[ -n "${derived_image}" ]]; then
     LCE_DEV_IMAGE="${derived_image}"
     echo "Prebuilt image: ${LCE_DEV_IMAGE}"
   else
-    echo "ERROR: LCE_USE_PREBUILT_DEV_IMAGE=1, lekin LCE_DEV_IMAGE berilmagan va git origin'dan GHCR image aniqlanmadi." >&2
-    echo "TIP: LCE_DEV_IMAGE=ghcr.io/<owner>/xlcu-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET} LCE_USE_PREBUILT_DEV_IMAGE=1 make run" >&2
-    exit 1
+    if [[ "${LCE_PREBUILT_AUTO_ACTIVE}" -eq 1 ]]; then
+      echo "WARNING: prebuilt image auto-mode: GHCR image aniqlanmadi. Local build'ga o'tyapman." >&2
+      LCE_USE_PREBUILT_DEV_IMAGE="0"
+      LCE_DEV_IMAGE="${LCE_LOCAL_DEV_IMAGE}"
+    else
+      echo "ERROR: LCE_USE_PREBUILT_DEV_IMAGE=1, lekin LCE_DEV_IMAGE berilmagan va git origin'dan GHCR image aniqlanmadi." >&2
+      echo "TIP: LCE_DEV_IMAGE=ghcr.io/<owner>/xlcu-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET} LCE_USE_PREBUILT_DEV_IMAGE=1 make run" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -958,11 +980,20 @@ fi
 if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}"; then
   if ! docker image inspect "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
     if ! docker pull "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
-      echo "ERROR: prebuilt image pull failed: ${LCE_DEV_IMAGE}" >&2
-      echo "TIP: set LCE_USE_PREBUILT_DEV_IMAGE=0 to build locally." >&2
-      exit 1
+      if [[ "${LCE_PREBUILT_AUTO_ACTIVE}" -eq 1 ]]; then
+        echo "WARNING: prebuilt image pull failed; local build'ga o'tyapman: ${LCE_DEV_IMAGE}" >&2
+        LCE_USE_PREBUILT_DEV_IMAGE="0"
+        LCE_DEV_IMAGE="${LCE_LOCAL_DEV_IMAGE}"
+      else
+        echo "ERROR: prebuilt image pull failed: ${LCE_DEV_IMAGE}" >&2
+        echo "TIP: set LCE_USE_PREBUILT_DEV_IMAGE=0 to build locally." >&2
+        exit 1
+      fi
     fi
   fi
+fi
+
+if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}"; then
   compose up -d --no-build "${SERVICES[@]}"
 else
   build_local_dev_image

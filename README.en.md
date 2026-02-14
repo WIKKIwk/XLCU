@@ -211,6 +211,12 @@ LCE_DEV_IMAGE=ghcr.io/<owner>/xlcu-bridge-dev:bridge-rfid \
 make run
 ```
 
+Additionally: by default `make run` will **auto-try prebuilt images on first run** and fall back to a local build if it cannot pull. Disable auto-prebuilt:
+
+```bash
+LCE_PREBUILT_AUTO=0 make run
+```
+
 - Narrow `RFID_SCAN_SUBNETS` to the actual network to speed up discovery.
 - Pre-fetch child repos if internet is slow/offline:
 
