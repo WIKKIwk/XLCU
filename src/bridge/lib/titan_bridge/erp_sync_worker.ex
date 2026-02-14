@@ -149,7 +149,10 @@ defmodule TitanBridge.ErpSyncWorker do
       {:epc_only, epcs, max_modified, draft_count} ->
         if full_refresh, do: clear_stock_drafts()
         put_epc_only_mapping(epcs)
-        if is_binary(max_modified) and String.trim(max_modified) != "", do: SyncState.put("stock_drafts_modified", max_modified)
+
+        if is_binary(max_modified) and String.trim(max_modified) != "",
+          do: SyncState.put("stock_drafts_modified", max_modified)
+
         %{drafts: to_int_or_default(draft_count, 0), epcs: length(epcs), source: :epc_only}
 
       {:rows, rows} ->
@@ -497,7 +500,10 @@ defmodule TitanBridge.ErpSyncWorker do
 
     Cache.put_epc_draft_mapping(mappings)
     epc_list = Enum.map(mappings, fn {epc, _} -> epc end)
-    Logger.info("[EPC_MAP] Tayyor: #{length(mappings)} ta EPC mapping. Namuna: #{inspect(Enum.take(epc_list, 5))}")
+
+    Logger.info(
+      "[EPC_MAP] Tayyor: #{length(mappings)} ta EPC mapping. Namuna: #{inspect(Enum.take(epc_list, 5))}"
+    )
   end
 
   defp extract_epc_from_remarks(remarks) when is_binary(remarks) do
@@ -522,11 +528,15 @@ defmodule TitanBridge.ErpSyncWorker do
       data
     else
       Logger.debug("[EPC_MAP] get_doc: #{draft.name}...")
+
       case ErpClient.get_doc("Stock Entry", draft.name) do
         {:ok, doc} ->
           items = doc["items"] || []
           barcodes = Enum.map(items, fn i -> i["barcode"] end) |> Enum.filter(&is_binary/1)
-          Logger.info("[EPC_MAP] get_doc OK: #{draft.name} items=#{length(items)} barcodes=#{inspect(barcodes)}")
+
+          Logger.info(
+            "[EPC_MAP] get_doc OK: #{draft.name} items=#{length(items)} barcodes=#{inspect(barcodes)}"
+          )
 
           now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 

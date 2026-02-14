@@ -201,10 +201,11 @@ defmodule TitanBridge.Children do
     cwd = child[:cwd]
 
     # args ham charlist yoki binary bo'lishi mumkin
-    args_bin = Enum.map(args, fn
-      a when is_list(a) -> to_string(a)
-      a -> a
-    end)
+    args_bin =
+      Enum.map(args, fn
+        a when is_list(a) -> to_string(a)
+        a -> a
+      end)
 
     cond do
       cwd && is_binary(cwd) && !File.dir?(cwd) ->

@@ -225,7 +225,9 @@ defmodule TitanBridge.ErpClient do
         if Keyword.get(opts, :compact, true) in [false, 0, "0", "false"], do: "0", else: "1"
 
       epc_only =
-        if Keyword.get(opts, :epc_only, false) in [true, 1, "1", "true", "yes"], do: "1", else: "0"
+        if Keyword.get(opts, :epc_only, false) in [true, 1, "1", "true", "yes"],
+          do: "1",
+          else: "0"
 
       query_params =
         [
@@ -1236,13 +1238,13 @@ defmodule TitanBridge.ErpClient do
           {:error, "ERP fast drafts epc_only payload missing epcs[]"}
         end
       else
-      drafts = message["drafts"] || []
+        drafts = message["drafts"] || []
 
-      if is_list(drafts) do
-        {:ok, message}
-      else
-        {:error, "ERP fast drafts payload missing drafts[]"}
-      end
+        if is_list(drafts) do
+          {:ok, message}
+        else
+          {:error, "ERP fast drafts payload missing drafts[]"}
+        end
       end
     end
   end

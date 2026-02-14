@@ -1294,6 +1294,7 @@ defmodule TitanBridge.Telegram.RfidBot do
 
         true ->
           Logger.info("RFID [#{epc}] qidirish boshlandi...")
+
           case find_draft_by_epc(epc) do
             {:ok, draft_info} ->
               clear_miss(epc)
@@ -1396,7 +1397,10 @@ defmodule TitanBridge.Telegram.RfidBot do
           |> Enum.uniq()
 
         if Enum.member?(normalized_epcs, epc) do
-          Logger.info("RFID [#{epc}] PG match: #{draft.name} epcs=#{inspect(Enum.take(normalized_epcs, 3))}")
+          Logger.info(
+            "RFID [#{epc}] PG match: #{draft.name} epcs=#{inspect(Enum.take(normalized_epcs, 3))}"
+          )
+
           {:ok, %{name: draft.name, doc: doc}}
         else
           nil
