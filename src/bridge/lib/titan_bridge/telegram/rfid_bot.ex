@@ -38,6 +38,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   @draft_sync_timeout_default_ms 60_000
   @draft_notify_ttl_default_ms 120_000
   @miss_replay_window_default_ms 300_000
+  @submitted_replay_window_default_ms 300_000
   @submit_page_size 8
 
   def start_link(_args) do
@@ -70,6 +71,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   @impl true
   def handle_cast({:draft_event, name, event}, state) do
     maybe_notify_draft_event(name, event)
+    if new_draft_event?(event), do: replay_recent_misses_now(100)
     {:noreply, state}
   end
 
@@ -1273,6 +1275,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   defp handle_tag_scan(raw_epc, opts) do
     epc = normalize_epc(raw_epc)
     ignore_miss = Keyword.get(opts, :ignore_miss, false)
+    ignore_submitted = Keyword.get(opts, :ignore_submitted, false)
 
     if epc == "" do
       :ok
@@ -1282,7 +1285,7 @@ defmodule TitanBridge.Telegram.RfidBot do
           Logger.debug("RFID [#{epc}] SKIP: inflight")
           :ok
 
-        recently_submitted?(epc) ->
+        not ignore_submitted and recently_submitted?(epc) ->
           Logger.debug("RFID [#{epc}] SKIP: recently_submitted")
           :ok
 
@@ -1817,7 +1820,12 @@ defmodule TitanBridge.Telegram.RfidBot do
   end
 
   defp remember_submitted_draft(name) when is_binary(name) and name != "" do
-    :ets.insert(@submitted_drafts_table, {name, System.monotonic_time(:millisecond)})
+    if synthetic_epc_draft_name?(name) do
+      :ok
+    else
+      :ets.insert(@submitted_drafts_table, {name, System.monotonic_time(:millisecond)})
+    end
+
     :ok
   end
 
@@ -1842,24 +1850,36 @@ defmodule TitanBridge.Telegram.RfidBot do
   end
 
   defp recently_submitted_draft?(name) when is_binary(name) and name != "" do
-    now = System.monotonic_time(:millisecond)
-    ttl = submitted_draft_ttl_ms()
+    if synthetic_epc_draft_name?(name) do
+      false
+    else
+      now = System.monotonic_time(:millisecond)
+      ttl = submitted_draft_ttl_ms()
 
-    case :ets.lookup(@submitted_drafts_table, name) do
-      [{^name, ts}] ->
-        if now - ts < ttl do
-          true
-        else
-          :ets.delete(@submitted_drafts_table, name)
+      case :ets.lookup(@submitted_drafts_table, name) do
+        [{^name, ts}] ->
+          if now - ts < ttl do
+            true
+          else
+            :ets.delete(@submitted_drafts_table, name)
+            false
+          end
+
+        _ ->
           false
-        end
-
-      _ ->
-        false
+      end
     end
   end
 
   defp recently_submitted_draft?(_), do: false
+
+  defp synthetic_epc_draft_name?(name) when is_binary(name) do
+    String.starts_with?(name, "EPC:")
+  end
+
+  defp synthetic_epc_draft_name?(_) do
+    false
+  end
 
   defp recently_missed?(epc) do
     now = System.monotonic_time(:millisecond)
@@ -1893,24 +1913,43 @@ defmodule TitanBridge.Telegram.RfidBot do
     end
   end
 
+  defp submitted_replay_window_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_SUBMITTED_REPLAY_WINDOW_MS") || "")) do
+      {n, _} when n >= 0 and n <= 86_400_000 -> n
+      _ -> @submitted_replay_window_default_ms
+    end
+  end
+
   defp replay_recent_misses_now(limit) do
     now = System.monotonic_time(:millisecond)
     window = miss_replay_window_ms()
+    submitted_window = submitted_replay_window_ms()
 
-    entries =
+    miss_entries =
       :ets.tab2list(@miss_table)
       |> Enum.filter(fn {epc, ts} ->
         is_binary(epc) and epc != "" and is_integer(ts) and now - ts <= window
       end)
       |> Enum.sort_by(fn {_epc, ts} -> ts end, :desc)
+
+    submitted_entries =
+      :ets.tab2list(@submitted_table)
+      |> Enum.filter(fn {epc, ts} ->
+        is_binary(epc) and epc != "" and is_integer(ts) and now - ts <= submitted_window
+      end)
+      |> Enum.sort_by(fn {_epc, ts} -> ts end, :desc)
+
+    entries =
+      (miss_entries ++ submitted_entries)
+      |> Enum.uniq_by(fn {epc, _ts} -> epc end)
       |> Enum.take(normalize_positive_int(limit, 100))
 
     if entries != [] do
-      Logger.info("RFID miss replay: #{length(entries)} EPC qayta tekshirildi")
+      Logger.info("RFID replay candidates: #{length(entries)} EPC qayta tekshirildi")
     end
 
     Enum.each(entries, fn {epc, _ts} ->
-      handle_tag_scan(epc, ignore_miss: true)
+      handle_tag_scan(epc, ignore_miss: true, ignore_submitted: true)
     end)
   end
 

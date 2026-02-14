@@ -123,6 +123,11 @@ defmodule TitanBridge.RfidListener do
               :no_tag
           end
 
+        {:ok, %Finch.Response{status: status, body: body}} ->
+          snippet = String.slice(to_string(body || ""), 0, 180)
+          Logger.debug("RFID poll non-2xx: HTTP #{status} #{snippet}")
+          :error
+
         {:error, reason} ->
           Logger.debug("RFID poll error: #{inspect(reason)}")
           :error
