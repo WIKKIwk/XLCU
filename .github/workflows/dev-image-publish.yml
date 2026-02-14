@@ -1,4 +1,4 @@
-name: Publish Dev Image
+name: Publish Dev Images
 
 on:
   workflow_dispatch:
@@ -16,6 +16,10 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [bridge-rfid, bridge-zebra, bridge-all]
     steps:
       - uses: actions/checkout@v4
 
@@ -24,6 +28,28 @@ jobs:
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "name=ghcr.io/${owner}/xlcu-bridge-dev" >> "$GITHUB_OUTPUT"
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.name }}"
+          target="${{ matrix.target }}"
+          sha="${GITHUB_SHA}"
+          short="${sha:0:12}"
+
+          {
+            echo "list<<EOF"
+            echo "${image}:${target}"
+            echo "${image}:${target}-sha-${short}"
+            # Backwards-compat alias for older docs/scripts (bridge-all only).
+            if [[ "${target}" == "bridge-all" ]]; then
+              echo "${image}:elixir-1.16.2-dotnet-10.0"
+              echo "${image}:elixir-1.16.2-dotnet-10.0-sha-${short}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -38,28 +64,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.image.outputs.name }}
-          tags: |
-            type=raw,value=elixir-1.16.2-dotnet-10.0
-            type=sha,prefix=sha-
-
-      - name: Build and push Dockerfile.dev
-        id: build
+      - name: Build and push Dockerfile.dev (${{ matrix.target }})
         uses: docker/build-push-action@v5
         with:
           context: ./src/bridge
           file: ./src/bridge/Dockerfile.dev
-          platforms: linux/amd64
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.list }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
 
-      - name: Output digest
+      - name: Output tags
         run: |
           echo "Published tags:"
-          echo "${{ steps.meta.outputs.tags }}"
-          echo "Digest: ${{ steps.build.outputs.digest }}"
+          echo "${{ steps.tags.outputs.list }}"

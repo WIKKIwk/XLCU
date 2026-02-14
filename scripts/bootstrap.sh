@@ -186,6 +186,8 @@ install_debian() {
 
   # Compose plugin is optional for this repo; install if available.
   as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin >/dev/null 2>&1 || true
+  # Buildx plugin speeds up builds (recommended); install if available.
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-buildx-plugin >/dev/null 2>&1 || true
 
   start_docker_service
   ensure_docker_group
@@ -195,6 +197,11 @@ install_arch() {
   # Keep arch consistent (avoid partial upgrades).
   as_root pacman -Syu --noconfirm --needed \
     ca-certificates curl git openssl lsof make screen docker docker-compose
+
+  # Some distros split buildx into a separate package.
+  if pacman -Si docker-buildx >/dev/null 2>&1; then
+    as_root pacman -S --noconfirm --needed docker-buildx
+  fi
 
   start_docker_service
   ensure_docker_group

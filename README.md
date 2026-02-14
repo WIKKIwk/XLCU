@@ -197,6 +197,20 @@ Eng ko'p ishlatiladigan env'lar:
 
 - Faqat kerakli target: `LCE_CHILDREN_TARGET=rfid` yoki `zebra`.
 - 1-marta ishga tushishda image pull/build og'ir bo'lishi normal (Dotnet SDK, deps). Keyingi run'lar cache hisobiga tezlashadi.
+- Kuchsiz PC (mini-PC/Raspberry) uchun tavsiya: **local build qilmasdan**, prebuilt dev image'ni pull qiling:
+
+```bash
+LCE_USE_PREBUILT_DEV_IMAGE=1 make run
+```
+
+Izoh: bu rejimda image avtomatik `ghcr.io/<owner>/xlcu-bridge-dev:<target>` dan olinadi (git `origin` GitHub bo'lsa). Agar kerak bo'lsa qo'lda berishingiz mumkin:
+
+```bash
+LCE_USE_PREBUILT_DEV_IMAGE=1 \
+LCE_DEV_IMAGE=ghcr.io/<owner>/xlcu-bridge-dev:bridge-rfid \
+make run
+```
+
 - `RFID_SCAN_SUBNETS` ni real tarmoqqa toraytiring (scan tez bo'ladi).
 - Offline/sekin internet bo'lsa child repo'larni oldindan olib qo'ying:
 

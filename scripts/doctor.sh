@@ -222,6 +222,13 @@ else
   exit 1
 fi
 
+if docker buildx version >/dev/null 2>&1; then
+  echo "Docker buildx: OK"
+else
+  echo "WARNING: Docker buildx plugin topilmadi. Birinchi image build juda sekin bo'lishi mumkin (kuchsiz PC'larda ayniqsa)." >&2
+  echo "TIP: make bootstrap (docker-buildx-plugin o'rnatadi) yoki prebuilt image ishlating: LCE_USE_PREBUILT_DEV_IMAGE=1 make run" >&2
+fi
+
 if docker_rootless; then
   echo "WARNING: Docker rootless rejimi aniqlandi. Hardware mapping (USB/serial/printer) barqaror bo'lmasligi mumkin." >&2
 fi

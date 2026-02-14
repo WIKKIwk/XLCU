@@ -376,6 +376,34 @@ has_buildx() {
   docker buildx version >/dev/null 2>&1
 }
 
+derive_ghcr_image() {
+  # Best-effort: derive ghcr.io/<owner>/xlcu-bridge-dev:<target> from git origin.
+  if ! command -v git >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local remote=""
+  remote="$(git -C "${LCE_DIR}" remote get-url origin 2>/dev/null || true)"
+  remote="$(trim_token "${remote}")"
+  if [[ -z "${remote}" ]]; then
+    return 1
+  fi
+
+  local owner=""
+  case "${remote}" in
+    *github.com* )
+      owner="$(printf '%s' "${remote}" | sed -E 's#^.*github\\.com[:/]([^/]+)/.*$#\\1#')"
+      ;;
+  esac
+
+  owner="$(printf '%s' "${owner}" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "${owner}" || "${owner}" == "${remote}" ]]; then
+    return 1
+  fi
+
+  printf 'ghcr.io/%s/xlcu-bridge-dev:%s' "${owner}" "${LCE_BRIDGE_IMAGE_TARGET}"
+}
+
 filter_legacy_builder_warning() {
   sed \
     -e '/^DEPRECATED: The legacy builder is deprecated and will be removed in a future release\.$/d' \
@@ -465,6 +493,10 @@ build_local_dev_image() {
   fi
 
   echo "Local dev image build: ${LCE_DEV_IMAGE} (target=${LCE_BRIDGE_IMAGE_TARGET})"
+  if ! has_buildx; then
+    echo "WARNING: docker buildx plugin topilmadi. Legacy builder ishlatiladi va birinchi build juda sekin bo'lishi mumkin." >&2
+    echo "TIP: make bootstrap (buildx o'rnatadi) yoki prebuilt image ishlating: LCE_USE_PREBUILT_DEV_IMAGE=1 make run" >&2
+  fi
   if has_buildx; then
     if ! DOCKER_BUILDKIT=1 docker build --target "${LCE_BRIDGE_IMAGE_TARGET}" -t "${LCE_DEV_IMAGE}" -f "${dockerfile}" "${bridge_dir}"; then
       echo "ERROR: local image build failed: ${LCE_DEV_IMAGE}" >&2
@@ -747,6 +779,18 @@ esac
 
 if [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
   LCE_DEV_IMAGE="lce-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET}"
+fi
+
+if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}" && [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
+  derived_image="$(derive_ghcr_image 2>/dev/null || true)"
+  if [[ -n "${derived_image}" ]]; then
+    LCE_DEV_IMAGE="${derived_image}"
+    echo "Prebuilt image: ${LCE_DEV_IMAGE}"
+  else
+    echo "ERROR: LCE_USE_PREBUILT_DEV_IMAGE=1, lekin LCE_DEV_IMAGE berilmagan va git origin'dan GHCR image aniqlanmadi." >&2
+    echo "TIP: LCE_DEV_IMAGE=ghcr.io/<owner>/xlcu-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET} LCE_USE_PREBUILT_DEV_IMAGE=1 make run" >&2
+    exit 1
+  fi
 fi
 
 LCE_START_CORE_AGENT=0

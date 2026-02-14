@@ -197,6 +197,20 @@ Common env vars:
 
 - Start only what you need: `LCE_CHILDREN_TARGET=rfid` or `zebra`.
 - First run can be heavy due to image pull/build (Dotnet SDK, deps). Next runs are faster thanks to caches.
+- For low-spec devices (mini-PC/Raspberry), recommended: **avoid local builds** and pull prebuilt dev images:
+
+```bash
+LCE_USE_PREBUILT_DEV_IMAGE=1 make run
+```
+
+Note: in this mode, the script auto-derives `ghcr.io/<owner>/xlcu-bridge-dev:<target>` from the git `origin` (when it is a GitHub remote). You can also set it explicitly:
+
+```bash
+LCE_USE_PREBUILT_DEV_IMAGE=1 \
+LCE_DEV_IMAGE=ghcr.io/<owner>/xlcu-bridge-dev:bridge-rfid \
+make run
+```
+
 - Narrow `RFID_SCAN_SUBNETS` to the actual network to speed up discovery.
 - Pre-fetch child repos if internet is slow/offline:
 
@@ -241,4 +255,3 @@ ZEBRA_REF=v1.2.3 RFID_REF=v1.2.3 bash scripts/fetch_children.sh
 ```
 
 Or in production use pinned clones via `LCE_ZEBRA_HOST_DIR` / `LCE_RFID_HOST_DIR`.
-
