@@ -179,11 +179,14 @@ defmodule TitanBridge.ErpSyncWorker do
               |> Enum.filter(&(&1 != ""))
               |> Enum.uniq()
 
+            draft_count = payload["count_drafts"] || payload["draft_count"]
+            draft_count_int = to_int_or_default(draft_count, 0)
+
             Logger.info(
-              "[FAST_DRAFTS] ERP epc_only loaded #{length(epcs)} epcs (since=#{inspect(since)})"
+              "[FAST_DRAFTS] ERP epc_only loaded #{length(epcs)} epcs, #{draft_count_int} drafts (since=#{inspect(since)})"
             )
 
-            {:epc_only, epcs, payload["max_modified"], payload["count_drafts"] || payload["draft_count"]}
+            {:epc_only, epcs, payload["max_modified"], draft_count_int}
           else
             drafts = payload["drafts"] || []
 
