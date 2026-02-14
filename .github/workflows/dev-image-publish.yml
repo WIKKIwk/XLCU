@@ -14,17 +14,45 @@ permissions:
   packages: write
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.target }} (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
-        target: [bridge-rfid, bridge-zebra, bridge-all]
+        include:
+          - target: bridge-rfid
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - target: bridge-rfid
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - target: bridge-zebra
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - target: bridge-zebra
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - target: bridge-all
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - target: bridge-all
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve image name
         id: image
+        shell: bash
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "name=ghcr.io/${owner}/xlcu-bridge-dev" >> "$GITHUB_OUTPUT"
@@ -36,23 +64,16 @@ jobs:
           set -euo pipefail
           image="${{ steps.image.outputs.name }}"
           target="${{ matrix.target }}"
+          arch="${{ matrix.arch }}"
           sha="${GITHUB_SHA}"
           short="${sha:0:12}"
 
           {
             echo "list<<EOF"
-            echo "${image}:${target}"
-            echo "${image}:${target}-sha-${short}"
-            # Backwards-compat alias for older docs/scripts (bridge-all only).
-            if [[ "${target}" == "bridge-all" ]]; then
-              echo "${image}:elixir-1.16.2-dotnet-10.0"
-              echo "${image}:elixir-1.16.2-dotnet-10.0-sha-${short}"
-            fi
+            echo "${image}:${target}-${arch}"
+            echo "${image}:${target}-${arch}-sha-${short}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -70,13 +91,62 @@ jobs:
           context: ./src/bridge
           file: ./src/bridge/Dockerfile.dev
           target: ${{ matrix.target }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ steps.tags.outputs.list }}
-          cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ matrix.arch }}
 
-      - name: Output tags
+  manifest:
+    name: Create Multi-Arch Tags
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve image name
+        id: image
+        shell: bash
         run: |
-          echo "Published tags:"
-          echo "${{ steps.tags.outputs.list }}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "name=ghcr.io/${owner}/xlcu-bridge-dev" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.name }}"
+          sha="${GITHUB_SHA}"
+          short="${sha:0:12}"
+
+          for target in bridge-rfid bridge-zebra bridge-all; do
+            echo "Creating ${image}:${target}"
+            docker buildx imagetools create \
+              -t "${image}:${target}" \
+              "${image}:${target}-amd64" \
+              "${image}:${target}-arm64"
+
+            echo "Creating ${image}:${target}-sha-${short}"
+            docker buildx imagetools create \
+              -t "${image}:${target}-sha-${short}" \
+              "${image}:${target}-amd64-sha-${short}" \
+              "${image}:${target}-arm64-sha-${short}"
+          done
+
+          # Backwards-compat alias for older docs/scripts (bridge-all).
+          docker buildx imagetools create \
+            -t "${image}:elixir-1.16.2-dotnet-10.0" \
+            "${image}:bridge-all"
+
+          docker buildx imagetools create \
+            -t "${image}:elixir-1.16.2-dotnet-10.0-sha-${short}" \
+            "${image}:bridge-all-sha-${short}"
+
