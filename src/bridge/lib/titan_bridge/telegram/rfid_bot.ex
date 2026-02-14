@@ -1465,10 +1465,17 @@ defmodule TitanBridge.Telegram.RfidBot do
         {:error, reason} ->
           Logger.warning("RFID submit xato: #{name} — #{inspect(reason)}")
 
-          if is_binary(token) and byte_size(token) > 0 and is_list(chats) and chats != [] do
-            stop_scanning_erp_down(token, chats, reason)
-          else
+          if to_string(reason) == "epc_not_found" do
+            # Stale mapping; do not stop scanner.
+            Cache.delete_epc_mapping(epc)
+            remember_miss(epc)
             :ok
+          else
+            if is_binary(token) and byte_size(token) > 0 and is_list(chats) and chats != [] do
+              stop_scanning_erp_down(token, chats, reason)
+            else
+              :ok
+            end
           end
       end
     end
@@ -1504,7 +1511,11 @@ defmodule TitanBridge.Telegram.RfidBot do
         {:error, "epc_not_found"} ->
           # Fallback: if EPC lookup missed due normalization/legacy data,
           # try direct submit by known draft name.
-          ErpClient.submit_stock_entry(name)
+          if is_binary(name) and name != "" and not String.starts_with?(name, "EPC:") do
+            ErpClient.submit_stock_entry(name)
+          else
+            {:error, "epc_not_found"}
+          end
 
         {:error, _} = err ->
           err

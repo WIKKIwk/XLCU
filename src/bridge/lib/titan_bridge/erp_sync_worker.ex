@@ -139,19 +139,25 @@ defmodule TitanBridge.ErpSyncWorker do
 
   defp sync_stock_drafts(full_refresh) do
     since = if full_refresh, do: nil, else: SyncState.get("stock_drafts_modified")
-    rows = fetch_stock_draft_rows(since)
+    case fetch_stock_draft_rows(since) do
+      {:epc_only, epcs, max_modified} ->
+        if full_refresh, do: clear_stock_drafts()
+        put_epc_only_mapping(epcs)
+        if is_binary(max_modified) and String.trim(max_modified) != "", do: SyncState.put("stock_drafts_modified", max_modified)
 
-    cond do
-      rows == [] and full_refresh ->
-        clear_stock_drafts()
+      {:rows, rows} ->
+        cond do
+          rows == [] and full_refresh ->
+            clear_stock_drafts()
 
-      true ->
-        update_stock_drafts(rows, full_refresh)
-        maybe_put_sync_state("stock_drafts_modified", rows)
+          true ->
+            update_stock_drafts(rows, full_refresh)
+            maybe_put_sync_state("stock_drafts_modified", rows)
+        end
+
+        # EPC → draft mapping yangilash (lokal cache dan)
+        build_epc_draft_mapping()
     end
-
-    # EPC → draft mapping yangilash (lokal cache dan)
-    build_epc_draft_mapping()
   end
 
   defp fetch_stock_draft_rows(since) do
@@ -160,31 +166,47 @@ defmodule TitanBridge.ErpSyncWorker do
              limit: fast_drafts_limit(),
              include_items: false,
              only_with_epc: true,
-             compact: true
+             compact: true,
+             epc_only: use_epc_only_payload?()
            ) do
         {:ok, payload} ->
-          drafts = payload["drafts"] || []
+          if payload["epc_only"] in [true, "true", 1, "1"] do
+            epcs =
+              (payload["epcs"] || [])
+              |> Enum.map(&to_string/1)
+              |> Enum.map(&String.trim/1)
+              |> Enum.filter(&(&1 != ""))
+              |> Enum.uniq()
 
-          rows =
-            drafts
-            |> Enum.map(&fast_draft_to_row/1)
-            |> Enum.filter(&is_binary(&1["name"]))
+            Logger.info(
+              "[FAST_DRAFTS] ERP epc_only loaded #{length(epcs)} epcs (since=#{inspect(since)})"
+            )
 
-          Logger.info(
-            "[FAST_DRAFTS] ERP method loaded #{length(rows)} drafts (since=#{inspect(since)})"
-          )
+            {:epc_only, epcs, payload["max_modified"]}
+          else
+            drafts = payload["drafts"] || []
 
-          rows
+            rows =
+              drafts
+              |> Enum.map(&fast_draft_to_row/1)
+              |> Enum.filter(&is_binary(&1["name"]))
+
+            Logger.info(
+              "[FAST_DRAFTS] ERP method loaded #{length(rows)} drafts (since=#{inspect(since)})"
+            )
+
+            {:rows, rows}
+          end
 
         {:error, reason} ->
           Logger.warning(
             "[FAST_DRAFTS] method failed, fallback to Stock Entry list: #{inspect(reason)}"
           )
 
-          fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)
+          {:rows, fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)}
       end
     else
-      fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)
+      {:rows, fetch_rows(&ErpClient.list_stock_drafts_modified/1, since)}
     end
   end
 
@@ -255,6 +277,33 @@ defmodule TitanBridge.ErpSyncWorker do
       {n, _} when n >= 100 and n <= 50_000 -> n
       _ -> 5000
     end
+  end
+
+  defp use_epc_only_payload? do
+    case String.downcase(to_string(System.get_env("LCE_ERP_FAST_DRAFT_EPC_ONLY") || "1")) do
+      "0" -> false
+      "false" -> false
+      "no" -> false
+      _ -> true
+    end
+  end
+
+  defp put_epc_only_mapping(epcs) when is_list(epcs) do
+    mappings =
+      epcs
+      |> Enum.map(&normalize_epc/1)
+      |> Enum.filter(&(&1 != ""))
+      |> Enum.uniq()
+      |> Enum.map(fn epc ->
+        {epc,
+         %{
+           name: "EPC:" <> epc,
+           doc: %{"name" => "EPC:" <> epc, "docstatus" => 0, "items" => []}
+         }}
+      end)
+
+    Cache.put_epc_draft_mapping(mappings)
+    Logger.info("[FAST_DRAFTS] EPC-only mapping updated: #{length(mappings)} epcs")
   end
 
   defp fetch_rows(fun, since) do

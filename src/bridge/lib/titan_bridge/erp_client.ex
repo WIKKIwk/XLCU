@@ -224,12 +224,16 @@ defmodule TitanBridge.ErpClient do
       compact =
         if Keyword.get(opts, :compact, true) in [false, 0, "0", "false"], do: "0", else: "1"
 
+      epc_only =
+        if Keyword.get(opts, :epc_only, false) in [true, 1, "1", "true", "yes"], do: "1", else: "0"
+
       query_params =
         [
           {"limit", Integer.to_string(limit)},
           {"include_items", include_items},
           {"only_with_epc", only_with_epc},
-          {"compact", compact}
+          {"compact", compact},
+          {"epc_only", epc_only}
         ]
         |> then(fn params ->
           since = to_string(modified_since || "") |> String.trim()
@@ -1221,12 +1225,24 @@ defmodule TitanBridge.ErpClient do
     if ok? in [false, "false", 0, "0"] do
       {:error, message["error"] || "ERP fast drafts api returned error"}
     else
+      epc_only? = message["epc_only"] in [true, "true", 1, "1"]
+
+      if epc_only? do
+        epcs = message["epcs"] || []
+
+        if is_list(epcs) do
+          {:ok, message}
+        else
+          {:error, "ERP fast drafts epc_only payload missing epcs[]"}
+        end
+      else
       drafts = message["drafts"] || []
 
       if is_list(drafts) do
         {:ok, message}
       else
         {:error, "ERP fast drafts payload missing drafts[]"}
+      end
       end
     end
   end
