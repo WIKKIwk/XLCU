@@ -137,7 +137,13 @@ defmodule TitanBridge.ErpSyncWorker do
   end
 
   defp sync_stock_drafts(full_refresh) do
-    since = if full_refresh, do: nil, else: SyncState.get("stock_drafts_modified")
+    # EPC-only payload returns compact snapshot for mapping. To avoid dropping
+    # unchanged EPCs, always request full snapshot in EPC-only mode.
+    since =
+      if full_refresh or use_epc_only_payload?(),
+        do: nil,
+        else: SyncState.get("stock_drafts_modified")
+
     case fetch_stock_draft_rows(since) do
       {:epc_only, epcs, max_modified, draft_count} ->
         if full_refresh, do: clear_stock_drafts()
@@ -567,11 +573,19 @@ defmodule TitanBridge.ErpSyncWorker do
         end
 
       "Stock Entry" ->
-        with {:ok, row} <- resolve_doc(doc, "Stock Entry", name) do
-          if to_int(row["docstatus"]) == 0 do
-            update_stock_drafts([row], false)
-          else
-            delete_stock_draft(row["name"])
+        if use_epc_only_payload?() do
+          _ = sync_stock_drafts(false)
+          :ok
+        else
+          with {:ok, row} <- resolve_doc(doc, "Stock Entry", name) do
+            if to_int(row["docstatus"]) == 0 do
+              update_stock_drafts([row], false)
+            else
+              delete_stock_draft(row["name"])
+            end
+
+            # Keep EPC→draft mapping in sync for webhook-driven updates.
+            build_epc_draft_mapping()
           end
         end
 
