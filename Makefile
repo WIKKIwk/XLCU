@@ -1,4 +1,5 @@
 .PHONY: run run-docker run-hw run-sim run-sim-rfid run-legacy doctor bootstrap support-bundle setup
+.PHONY: offline-bundle
 
 # Default to hardware-friendly Docker mode (USB/serial access). Override:
 #   make run LCE_DOCKER_PRIVILEGED=0
@@ -41,3 +42,6 @@ support-bundle:
 	@bash scripts/support_bundle.sh
 
 setup: bootstrap doctor
+
+offline-bundle:
+	@bash scripts/offline_bundle.sh "$(LCE_CHILDREN_TARGET)"
