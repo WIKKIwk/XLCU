@@ -61,7 +61,6 @@ defmodule TitanBridge.ErpSyncWorker do
     result =
       if configured?() do
         sync_all(full_refresh)
-        :ok
       else
         {:error, "ERP config missing"}
       end
@@ -140,10 +139,11 @@ defmodule TitanBridge.ErpSyncWorker do
   defp sync_stock_drafts(full_refresh) do
     since = if full_refresh, do: nil, else: SyncState.get("stock_drafts_modified")
     case fetch_stock_draft_rows(since) do
-      {:epc_only, epcs, max_modified} ->
+      {:epc_only, epcs, max_modified, draft_count} ->
         if full_refresh, do: clear_stock_drafts()
         put_epc_only_mapping(epcs)
         if is_binary(max_modified) and String.trim(max_modified) != "", do: SyncState.put("stock_drafts_modified", max_modified)
+        %{drafts: to_int_or_default(draft_count, 0), epcs: length(epcs), source: :epc_only}
 
       {:rows, rows} ->
         cond do
@@ -157,6 +157,7 @@ defmodule TitanBridge.ErpSyncWorker do
 
         # EPC → draft mapping yangilash (lokal cache dan)
         build_epc_draft_mapping()
+        %{drafts: count_stock_drafts(), epcs: epc_mapping_size(), source: :rows}
     end
   end
 
@@ -182,7 +183,7 @@ defmodule TitanBridge.ErpSyncWorker do
               "[FAST_DRAFTS] ERP epc_only loaded #{length(epcs)} epcs (since=#{inspect(since)})"
             )
 
-            {:epc_only, epcs, payload["max_modified"]}
+            {:epc_only, epcs, payload["max_modified"], payload["count_drafts"] || payload["draft_count"]}
           else
             drafts = payload["drafts"] || []
 
@@ -305,6 +306,31 @@ defmodule TitanBridge.ErpSyncWorker do
     Cache.put_epc_draft_mapping(mappings)
     Logger.info("[FAST_DRAFTS] EPC-only mapping updated: #{length(mappings)} epcs")
   end
+
+  defp count_stock_drafts do
+    Cache.list_stock_drafts()
+    |> length()
+  end
+
+  defp epc_mapping_size do
+    case :ets.whereis(:lce_cache_epc_drafts) do
+      :undefined -> 0
+      _ -> :ets.info(:lce_cache_epc_drafts, :size) || 0
+    end
+  end
+
+  defp to_int_or_default(nil, default), do: default
+
+  defp to_int_or_default(value, _default) when is_integer(value), do: value
+
+  defp to_int_or_default(value, default) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {n, _} -> n
+      :error -> default
+    end
+  end
+
+  defp to_int_or_default(_value, default), do: default
 
   defp fetch_rows(fun, since) do
     case fun.(since) do

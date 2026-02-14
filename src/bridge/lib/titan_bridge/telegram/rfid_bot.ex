@@ -1912,6 +1912,12 @@ defmodule TitanBridge.Telegram.RfidBot do
     timeout = draft_sync_timeout_ms()
 
     case ErpSyncWorker.sync_now_blocking(full_refresh, timeout) do
+      {:ok, %{drafts: drafts, epcs: epcs}} ->
+        {:ok, %{drafts: drafts, epcs: epcs}}
+
+      %{drafts: drafts, epcs: epcs} ->
+        {:ok, %{drafts: drafts, epcs: epcs}}
+
       :ok ->
         {:ok, %{drafts: length(Cache.list_stock_drafts()), epcs: epc_mapping_size()}}
 
