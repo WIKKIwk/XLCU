@@ -381,6 +381,37 @@ has_buildx() {
   docker buildx version >/dev/null 2>&1
 }
 
+ensure_docker_access() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: docker topilmadi. Docker Engine + Docker Compose o'rnating." >&2
+    return 1
+  fi
+
+  local out=""
+  if out="$(docker info 2>&1)"; then
+    return 0
+  fi
+
+  if printf '%s' "${out}" | grep -qi 'permission denied'; then
+    echo "ERROR: Docker bor, lekin ushbu user /var/run/docker.sock ga ruxsatga ega emas (permission denied)." >&2
+    echo "FIX (Ubuntu/Debian): sudo usermod -aG docker \\$USER" >&2
+    echo "FIX: logout/login qiling (yoki: newgrp docker)" >&2
+    echo "FIX: sudo systemctl enable --now docker" >&2
+    echo "TEST: docker info" >&2
+    echo "Vaqtincha (tavsiya emas): sudo make run" >&2
+    return 1
+  fi
+
+  if printf '%s' "${out}" | grep -qiE 'Cannot connect to the Docker daemon|Is the docker daemon running'; then
+    echo "ERROR: Docker daemon ishlamayapti (docker info failed)." >&2
+    echo "FIX: sudo systemctl enable --now docker" >&2
+    return 1
+  fi
+
+  echo "ERROR: docker info failed: ${out}" >&2
+  return 1
+}
+
 derive_ghcr_image() {
   # Best-effort: derive ghcr.io/<owner>/xlcu-bridge-dev:<target> from git origin.
   if ! command -v git >/dev/null 2>&1; then
@@ -390,19 +421,22 @@ derive_ghcr_image() {
   local remote=""
   remote="$(git -C "${LCE_DIR}" remote get-url origin 2>/dev/null || true)"
   remote="$(trim_token "${remote}")"
+  remote="${remote%/}"
   if [[ -z "${remote}" ]]; then
     return 1
   fi
 
   local owner=""
-  case "${remote}" in
-    *github.com* )
-      owner="$(printf '%s' "${remote}" | sed -E 's#^.*github\\.com[:/]([^/]+)/.*$#\\1#')"
-      ;;
-  esac
-
+  if [[ "${remote}" =~ github\.com[:/]([^/]+)/ ]]; then
+    owner="${BASH_REMATCH[1]}"
+  fi
   owner="$(printf '%s' "${owner}" | tr '[:upper:]' '[:lower:]')"
-  if [[ -z "${owner}" || "${owner}" == "${remote}" ]]; then
+  if [[ -z "${owner}" ]]; then
+    return 1
+  fi
+
+  # GitHub username sanity check (prevents ghcr.io/https://... style bugs).
+  if [[ ! "${owner}" =~ ^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$ ]]; then
     return 1
   fi
 
@@ -786,6 +820,10 @@ if [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
   LCE_DEV_IMAGE="lce-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET}"
 fi
 
+if [[ "${LCE_DRY_RUN}" != "1" ]]; then
+  ensure_docker_access
+fi
+
 # If user did not explicitly choose prebuilt/local mode, try prebuilt images on first run.
 # This makes fresh installs fast on low-spec PCs, while still falling back to local builds.
 LCE_PREBUILT_AUTO_ACTIVE=0
@@ -979,7 +1017,7 @@ fi
 
 if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}"; then
   if ! docker image inspect "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
-    if ! docker pull "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
+    if ! docker pull "${LCE_DEV_IMAGE}"; then
       if [[ "${LCE_PREBUILT_AUTO_ACTIVE}" -eq 1 ]]; then
         echo "WARNING: prebuilt image pull failed; local build'ga o'tyapman: ${LCE_DEV_IMAGE}" >&2
         LCE_USE_PREBUILT_DEV_IMAGE="0"
