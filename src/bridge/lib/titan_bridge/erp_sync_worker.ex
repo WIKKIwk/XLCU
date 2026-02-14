@@ -158,8 +158,9 @@ defmodule TitanBridge.ErpSyncWorker do
     if use_fast_drafts_api?() do
       case ErpClient.get_open_stock_entry_drafts_fast(since,
              limit: fast_drafts_limit(),
-             include_items: true,
-             only_with_epc: true
+             include_items: false,
+             only_with_epc: true,
+             compact: true
            ) do
         {:ok, payload} ->
           drafts = payload["drafts"] || []
@@ -188,19 +189,42 @@ defmodule TitanBridge.ErpSyncWorker do
   end
 
   defp fast_draft_to_row(draft) when is_map(draft) do
+    raw_items = draft["items"] || []
+    epcs = draft["epcs"] || []
+
     items =
-      (draft["items"] || [])
-      |> Enum.map(fn item ->
-        %{
-          "item_code" => item["item_code"],
-          "qty" => item["qty"],
-          "s_warehouse" => item["s_warehouse"],
-          "t_warehouse" => item["t_warehouse"],
-          "barcode" => item["barcode"] || "",
-          "batch_no" => item["batch_no"] || "",
-          "serial_no" => item["serial_no"] || ""
-        }
-      end)
+      cond do
+        is_list(raw_items) and raw_items != [] ->
+          raw_items
+          |> Enum.map(fn item ->
+            %{
+              "item_code" => item["item_code"],
+              "qty" => item["qty"],
+              "s_warehouse" => item["s_warehouse"],
+              "t_warehouse" => item["t_warehouse"],
+              "barcode" => item["barcode"] || "",
+              "batch_no" => item["batch_no"] || "",
+              "serial_no" => item["serial_no"] || ""
+            }
+          end)
+
+        is_list(epcs) and epcs != [] ->
+          epcs
+          |> Enum.map(fn epc ->
+            %{
+              "item_code" => nil,
+              "qty" => 1,
+              "s_warehouse" => nil,
+              "t_warehouse" => nil,
+              "barcode" => epc,
+              "batch_no" => "",
+              "serial_no" => ""
+            }
+          end)
+
+        true ->
+          []
+      end
 
     %{
       "name" => draft["name"],

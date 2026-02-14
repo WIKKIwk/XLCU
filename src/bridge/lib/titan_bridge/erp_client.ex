@@ -221,11 +221,15 @@ defmodule TitanBridge.ErpClient do
       only_with_epc =
         if Keyword.get(opts, :only_with_epc, true) in [false, 0, "0", "false"], do: "0", else: "1"
 
+      compact =
+        if Keyword.get(opts, :compact, true) in [false, 0, "0", "false"], do: "0", else: "1"
+
       query_params =
         [
           {"limit", Integer.to_string(limit)},
           {"include_items", include_items},
-          {"only_with_epc", only_with_epc}
+          {"only_with_epc", only_with_epc},
+          {"compact", compact}
         ]
         |> then(fn params ->
           since = to_string(modified_since || "") |> String.trim()

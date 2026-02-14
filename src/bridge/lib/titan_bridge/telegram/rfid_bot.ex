@@ -1982,7 +1982,8 @@ defmodule TitanBridge.Telegram.RfidBot do
     case ErpClient.get_open_stock_entry_drafts_fast(nil,
            limit: 5000,
            include_items: true,
-           only_with_epc: true
+           only_with_epc: true,
+           compact: false
          ) do
       {:ok, %{"drafts" => drafts}} when is_list(drafts) ->
         result =
