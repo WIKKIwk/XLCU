@@ -189,6 +189,7 @@ Common env vars:
 - `LCE_FORCE_RESTART` - default `1` (avoids stale polling conflicts by restarting each run).
 - `LCE_DOCKER_PRIVILEGED` - default `1` (USB/serial).
 - `LCE_USE_PREBUILT_DEV_IMAGE` - if `1`, skip local build and pull image.
+- `LCE_PREBUILT_ONLY` - if `1`, do not fall back to local builds when prebuilt pull fails (fail-fast). Default: `1` on low-spec devices (<=2GB RAM).
 - `LCE_REBUILD_IMAGE` - if `1`, force rebuild bridge image.
 - `LCE_ENABLE_CORE_AGENT` - `auto` | `0` | `1`.
 - `RFID_SCAN_SUBNETS` - LAN scan CIDRs (comma-separated). Default auto-detected.
@@ -200,7 +201,7 @@ Common env vars:
 - For low-spec devices (mini-PC/Raspberry), recommended: **avoid local builds** and pull prebuilt dev images:
 
 ```bash
-LCE_USE_PREBUILT_DEV_IMAGE=1 make run
+LCE_USE_PREBUILT_DEV_IMAGE=1 LCE_PREBUILT_ONLY=1 make run
 ```
 
 Note: in this mode, the script auto-derives `ghcr.io/<owner>/xlcu-bridge-dev:<target>` from the git `origin` (when it is a GitHub remote). You can also set it explicitly:

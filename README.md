@@ -189,6 +189,7 @@ Eng ko'p ishlatiladigan env'lar:
 - `LCE_FORCE_RESTART` - default `1` (stale polling conflict bo'lmasligi uchun har run restart).
 - `LCE_DOCKER_PRIVILEGED` - default `1` (USB/serial uchun).
 - `LCE_USE_PREBUILT_DEV_IMAGE` - `1` bo'lsa local build skip, image pull.
+- `LCE_PREBUILT_ONLY` - `1` bo'lsa prebuilt pull xato bo'lganda local build qilmaydi (fail-fast). Default: low-spec (<=2GB RAM) qurilmalarda `1`.
 - `LCE_REBUILD_IMAGE` - `1` bo'lsa bridge image majburan rebuild.
 - `LCE_ENABLE_CORE_AGENT` - `auto` | `0` | `1`.
 - `RFID_SCAN_SUBNETS` - LAN scan CIDR ro'yxati (vergul bilan). Default avtomatik aniqlanadi.
@@ -200,7 +201,7 @@ Eng ko'p ishlatiladigan env'lar:
 - Kuchsiz PC (mini-PC/Raspberry) uchun tavsiya: **local build qilmasdan**, prebuilt dev image'ni pull qiling:
 
 ```bash
-LCE_USE_PREBUILT_DEV_IMAGE=1 make run
+LCE_USE_PREBUILT_DEV_IMAGE=1 LCE_PREBUILT_ONLY=1 make run
 ```
 
 Izoh: bu rejimda image avtomatik `ghcr.io/<owner>/xlcu-bridge-dev:<target>` dan olinadi (git `origin` GitHub bo'lsa). Agar kerak bo'lsa qo'lda berishingiz mumkin:
