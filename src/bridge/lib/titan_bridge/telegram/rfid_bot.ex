@@ -29,17 +29,27 @@ defmodule TitanBridge.Telegram.RfidBot do
   @miss_table :rfid_tg_miss
   @submitted_table :rfid_tg_submitted
   @submitted_drafts_table :rfid_tg_submitted_drafts
+  @draft_notify_table :rfid_tg_draft_notify
   @poll_default_ms 1200
   @poll_timeout_default 25
   @miss_ttl_default_ms 2_000
   @drafts_cache_ttl_ms 60_000
   @draft_refresh_default_ms 180_000
   @draft_sync_timeout_default_ms 60_000
+  @draft_notify_ttl_default_ms 120_000
   @submit_page_size 8
 
   def start_link(_args) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   end
+
+  def notify_draft_event(name, event \\ "unknown")
+
+  def notify_draft_event(name, event) when is_binary(name) do
+    GenServer.cast(__MODULE__, {:draft_event, String.trim(name), to_string(event || "unknown")})
+  end
+
+  def notify_draft_event(_, _), do: :ok
 
   @impl true
   def init(_) do
@@ -50,6 +60,12 @@ defmodule TitanBridge.Telegram.RfidBot do
     if draft_refresh_interval_ms() > 0, do: schedule_draft_refresh(draft_refresh_interval_ms())
     Logger.info("RFID bot listener subscribed (persistent mode)")
     {:ok, %{poll_inflight: false, draft_refresh_inflight: false}}
+  end
+
+  @impl true
+  def handle_cast({:draft_event, name, event}, state) do
+    maybe_notify_draft_event(name, event)
+    {:noreply, state}
   end
 
   # --- Telegram Polling ---
@@ -1727,6 +1743,7 @@ defmodule TitanBridge.Telegram.RfidBot do
     ensure_table!(@miss_table)
     ensure_table!(@submitted_table)
     ensure_table!(@submitted_drafts_table)
+    ensure_table!(@draft_notify_table)
   end
 
   defp ensure_table!(name) do
@@ -1869,6 +1886,13 @@ defmodule TitanBridge.Telegram.RfidBot do
     end
   end
 
+  defp draft_notify_ttl_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_DRAFT_NOTIFY_TTL_MS") || "")) do
+      {n, _} when n >= 0 and n <= 86_400_000 -> n
+      _ -> @draft_notify_ttl_default_ms
+    end
+  end
+
   defp schedule_poll(ms) do
     Process.send_after(self(), :poll, ms)
   end
@@ -1934,6 +1958,54 @@ defmodule TitanBridge.Telegram.RfidBot do
       :undefined -> 0
       _ -> :ets.info(:lce_cache_epc_drafts, :size) || 0
     end
+  end
+
+  defp maybe_notify_draft_event(name, event) when is_binary(name) do
+    normalized_name = String.trim(name)
+
+    if normalized_name != "" and new_draft_event?(event) and should_notify_draft?(normalized_name) do
+      token = get_rfid_token()
+      chats = notification_chats()
+
+      if is_binary(token) and token != "" and chats != [] do
+        Logger.info("RFID draft notify: #{normalized_name} event=#{event} chats=#{length(chats)}")
+
+        text =
+          "Yangi draft ochildi: #{normalized_name}\n" <>
+            "Cache avtomatik yangilandi."
+
+        Enum.each(chats, fn chat_id ->
+          send_message(token, chat_id, text)
+        end)
+      end
+    end
+  end
+
+  defp maybe_notify_draft_event(_, _), do: :ok
+
+  defp new_draft_event?(event) do
+    e = event |> to_string() |> String.trim() |> String.downcase()
+    e in ["after_insert", "insert", "created", "new"]
+  end
+
+  defp should_notify_draft?(name) do
+    now = System.monotonic_time(:millisecond)
+    ttl = draft_notify_ttl_ms()
+
+    case :ets.lookup(@draft_notify_table, name) do
+      [{^name, ts}] when now - ts < ttl ->
+        false
+
+      _ ->
+        :ets.insert(@draft_notify_table, {name, now})
+        true
+    end
+  end
+
+  defp notification_chats do
+    :ets.tab2list(@state_table)
+    |> Enum.filter(fn {_chat_id, state} -> state in ["ready", "scanning"] end)
+    |> Enum.map(fn {chat_id, _state} -> chat_id end)
   end
 
   # --- Inline cache (drafts) ---

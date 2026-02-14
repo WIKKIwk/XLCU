@@ -17,6 +17,7 @@ defmodule TitanBridge.ErpSyncWorker do
 
   alias TitanBridge.{Cache, ErpClient, Realtime, Repo, SyncState}
   alias TitanBridge.Cache.{Item, Warehouse, Bin, StockDraft}
+  alias TitanBridge.Telegram.RfidBot
 
   def start_link(_args) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -555,6 +556,7 @@ defmodule TitanBridge.ErpSyncWorker do
     doc = payload["doc"] || payload["data"] || %{}
     doctype = payload["doctype"] || doc["doctype"]
     name = payload["name"] || doc["name"]
+    event = payload["event"] || payload["method"] || payload["action"] || "unknown"
 
     case doctype do
       "Item" ->
@@ -575,11 +577,13 @@ defmodule TitanBridge.ErpSyncWorker do
       "Stock Entry" ->
         if use_epc_only_payload?() do
           _ = sync_stock_drafts(false)
+          maybe_notify_new_draft(name, event)
           :ok
         else
           with {:ok, row} <- resolve_doc(doc, "Stock Entry", name) do
             if to_int(row["docstatus"]) == 0 do
               update_stock_drafts([row], false)
+              maybe_notify_new_draft(row["name"] || name, event)
             else
               delete_stock_draft(row["name"])
             end
@@ -591,6 +595,14 @@ defmodule TitanBridge.ErpSyncWorker do
 
       _ ->
         :ok
+    end
+  end
+
+  defp maybe_notify_new_draft(name, event) do
+    try do
+      RfidBot.notify_draft_event(to_string(name || ""), event)
+    rescue
+      _ -> :ok
     end
   end
 
