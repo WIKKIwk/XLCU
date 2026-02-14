@@ -188,8 +188,8 @@ Eng ko'p ishlatiladigan env'lar:
 - `LCE_CHILDREN_TARGET` - `zebra` | `rfid` | `all`.
 - `LCE_FORCE_RESTART` - default `1` (stale polling conflict bo'lmasligi uchun har run restart).
 - `LCE_DOCKER_PRIVILEGED` - default `1` (USB/serial uchun).
-- `LCE_USE_PREBUILT_DEV_IMAGE` - `1` bo'lsa local build skip, image pull.
-- `LCE_PREBUILT_ONLY` - `1` bo'lsa prebuilt pull xato bo'lganda local build qilmaydi (fail-fast). Default: low-spec (<=2GB RAM) qurilmalarda `1`.
+- `LCE_USE_PREBUILT_DEV_IMAGE` - default `1` (local build yo'q, image pull).
+- `LCE_PREBUILT_ONLY` - default `1` (prebuilt pull xato bo'lsa local build qilmaydi, fail-fast).
 - `LCE_REBUILD_IMAGE` - `1` bo'lsa bridge image majburan rebuild.
 - `LCE_ENABLE_CORE_AGENT` - `auto` | `0` | `1`.
 - `RFID_SCAN_SUBNETS` - LAN scan CIDR ro'yxati (vergul bilan). Default avtomatik aniqlanadi.
@@ -198,10 +198,10 @@ Eng ko'p ishlatiladigan env'lar:
 
 - Faqat kerakli target: `LCE_CHILDREN_TARGET=rfid` yoki `zebra`.
 - 1-marta ishga tushishda image pull/build og'ir bo'lishi normal (Dotnet SDK, deps). Keyingi run'lar cache hisobiga tezlashadi.
-- Kuchsiz PC (mini-PC/Raspberry) uchun tavsiya: **local build qilmasdan**, prebuilt dev image'ni pull qiling:
+- Default: local build umuman yo'q. `make run` prebuilt image'ni ishlatadi va pull qila olmasa xatolik bilan to'xtaydi (soatlab build kutmaysiz).
 
 ```bash
-LCE_USE_PREBUILT_DEV_IMAGE=1 LCE_PREBUILT_ONLY=1 make run
+make run
 ```
 
 Izoh: bu rejimda image avtomatik `ghcr.io/<owner>/xlcu-bridge-dev:<target>` dan olinadi (git `origin` GitHub bo'lsa). Agar kerak bo'lsa qo'lda berishingiz mumkin:

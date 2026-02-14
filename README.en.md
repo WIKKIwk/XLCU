@@ -188,8 +188,8 @@ Common env vars:
 - `LCE_CHILDREN_TARGET` - `zebra` | `rfid` | `all`.
 - `LCE_FORCE_RESTART` - default `1` (avoids stale polling conflicts by restarting each run).
 - `LCE_DOCKER_PRIVILEGED` - default `1` (USB/serial).
-- `LCE_USE_PREBUILT_DEV_IMAGE` - if `1`, skip local build and pull image.
-- `LCE_PREBUILT_ONLY` - if `1`, do not fall back to local builds when prebuilt pull fails (fail-fast). Default: `1` on low-spec devices (<=2GB RAM).
+- `LCE_USE_PREBUILT_DEV_IMAGE` - default `1` (no local builds, pull image).
+- `LCE_PREBUILT_ONLY` - default `1` (fail-fast on pull errors; no local build fallback).
 - `LCE_REBUILD_IMAGE` - if `1`, force rebuild bridge image.
 - `LCE_ENABLE_CORE_AGENT` - `auto` | `0` | `1`.
 - `RFID_SCAN_SUBNETS` - LAN scan CIDRs (comma-separated). Default auto-detected.
@@ -198,10 +198,10 @@ Common env vars:
 
 - Start only what you need: `LCE_CHILDREN_TARGET=rfid` or `zebra`.
 - First run can be heavy due to image pull/build (Dotnet SDK, deps). Next runs are faster thanks to caches.
-- For low-spec devices (mini-PC/Raspberry), recommended: **avoid local builds** and pull prebuilt dev images:
+- Default: local builds are disabled. `make run` uses prebuilt images and will stop with an error if it cannot pull them (no hour-long builds).
 
 ```bash
-LCE_USE_PREBUILT_DEV_IMAGE=1 LCE_PREBUILT_ONLY=1 make run
+make run
 ```
 
 Note: in this mode, the script auto-derives `ghcr.io/<owner>/xlcu-bridge-dev:<target>` from the git `origin` (when it is a GitHub remote). You can also set it explicitly:

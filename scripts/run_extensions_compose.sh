@@ -32,13 +32,13 @@ LCE_USE_PREBUILT_DEV_IMAGE_USER_SET=0
 if [[ -n "${LCE_USE_PREBUILT_DEV_IMAGE+x}" ]]; then
   LCE_USE_PREBUILT_DEV_IMAGE_USER_SET=1
 fi
-LCE_USE_PREBUILT_DEV_IMAGE="${LCE_USE_PREBUILT_DEV_IMAGE:-0}"
+LCE_USE_PREBUILT_DEV_IMAGE="${LCE_USE_PREBUILT_DEV_IMAGE:-1}"
 LCE_PREBUILT_AUTO="${LCE_PREBUILT_AUTO:-1}"
 LCE_PREBUILT_ONLY_USER_SET=0
 if [[ -n "${LCE_PREBUILT_ONLY+x}" ]]; then
   LCE_PREBUILT_ONLY_USER_SET=1
 fi
-LCE_PREBUILT_ONLY="${LCE_PREBUILT_ONLY:-0}"
+LCE_PREBUILT_ONLY="${LCE_PREBUILT_ONLY:-1}"
 LCE_REBUILD_IMAGE="${LCE_REBUILD_IMAGE:-0}"
 LCE_BRIDGE_IMAGE_TARGET="${LCE_BRIDGE_IMAGE_TARGET:-}"
 LCE_ALLOW_TARGET_MISMATCH="${LCE_ALLOW_TARGET_MISMATCH:-0}"
@@ -448,20 +448,6 @@ prebuilt_supported_arch() {
   esac
 }
 
-is_low_spec_machine() {
-  # Heuristic: <= 2GB RAM is considered low-spec for local builds.
-  local mem_kb=""
-  if [[ -r /proc/meminfo ]]; then
-    mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null | head -n 1 || true)"
-  fi
-  if [[ -n "${mem_kb}" && "${mem_kb}" =~ ^[0-9]+$ ]]; then
-    if (( mem_kb <= 2000000 )); then
-      return 0
-    fi
-  fi
-  return 1
-}
-
 derive_ghcr_image() {
   # Best-effort: derive ghcr.io/<owner>/xlcu-bridge-dev:<target> from git origin.
   if ! command -v git >/dev/null 2>&1; then
@@ -868,15 +854,6 @@ esac
 
 if [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
   LCE_DEV_IMAGE="lce-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET}"
-fi
-
-LCE_LOW_SPEC=0
-if is_low_spec_machine; then
-  LCE_LOW_SPEC=1
-fi
-if [[ "${LCE_PREBUILT_ONLY_USER_SET}" -eq 0 ]] && [[ "${LCE_LOW_SPEC}" -eq 1 ]]; then
-  # On low-spec machines, never silently fall back to local builds (can take hours).
-  LCE_PREBUILT_ONLY="1"
 fi
 
 if [[ "${LCE_DRY_RUN}" != "1" ]]; then
