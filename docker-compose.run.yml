@@ -32,7 +32,8 @@ services:
     environment:
       DATABASE_URL: "ecto://titan:titan_secret@postgres:5432/titan_bridge_dev"
       MIX_ENV: dev
-      LCE_HTTP_PORT: "${LCE_PORT:-4000}"
+      # Container always listens on 4000; host port can be changed via LCE_PORT mapping.
+      LCE_HTTP_PORT: "4000"
       CLOAK_KEY: "${CLOAK_KEY:-}"
       LCE_HOST_ALIAS: host.docker.internal
       LCE_ROOT_DIR: /workspace
@@ -97,7 +98,7 @@ services:
         mix ecto.migrate
         mix run --no-halt
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${LCE_PORT:-4000}/api/health >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4000/api/health >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 30
