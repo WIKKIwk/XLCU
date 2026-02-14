@@ -1,5 +1,7 @@
 # XLCU (Local Core Extensions)
 
+[English](README.en.md)
+
 XLCU ERPNext bilan zavod/ombordagi "temir"larni (printer, tarozi, UHF RFID) barqaror va past latency bilan bog'laydigan lokal stack.
 
 Bu repo maqsadi:
