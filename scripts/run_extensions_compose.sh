@@ -34,6 +34,11 @@ if [[ -n "${LCE_USE_PREBUILT_DEV_IMAGE+x}" ]]; then
 fi
 LCE_USE_PREBUILT_DEV_IMAGE="${LCE_USE_PREBUILT_DEV_IMAGE:-0}"
 LCE_PREBUILT_AUTO="${LCE_PREBUILT_AUTO:-1}"
+LCE_PREBUILT_ONLY_USER_SET=0
+if [[ -n "${LCE_PREBUILT_ONLY+x}" ]]; then
+  LCE_PREBUILT_ONLY_USER_SET=1
+fi
+LCE_PREBUILT_ONLY="${LCE_PREBUILT_ONLY:-0}"
 LCE_REBUILD_IMAGE="${LCE_REBUILD_IMAGE:-0}"
 LCE_BRIDGE_IMAGE_TARGET="${LCE_BRIDGE_IMAGE_TARGET:-}"
 LCE_ALLOW_TARGET_MISMATCH="${LCE_ALLOW_TARGET_MISMATCH:-0}"
@@ -409,6 +414,51 @@ ensure_docker_access() {
   fi
 
   echo "ERROR: docker info failed: ${out}" >&2
+  return 1
+}
+
+validate_image_ref() {
+  local img="${1:-}"
+  if [[ -z "${img}" ]]; then
+    return 1
+  fi
+  # Docker image references must not be URLs.
+  if [[ "${img}" == *"://"* ]]; then
+    echo "ERROR: invalid Docker image reference (URL ko'rinishida): ${img}" >&2
+    echo "TIP: to'g'risi: ghcr.io/<owner>/xlcu-bridge-dev:<target> (masalan: ghcr.io/wikkiwk/xlcu-bridge-dev:bridge-rfid)" >&2
+    return 1
+  fi
+  if [[ "${img}" == *" "* ]]; then
+    echo "ERROR: invalid Docker image reference (bo'sh joy bor): ${img}" >&2
+    return 1
+  fi
+  return 0
+}
+
+host_arch() {
+  uname -m 2>/dev/null || echo ""
+}
+
+prebuilt_supported_arch() {
+  local arch
+  arch="$(host_arch)"
+  case "${arch}" in
+    x86_64|amd64|aarch64|arm64) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_low_spec_machine() {
+  # Heuristic: <= 2GB RAM is considered low-spec for local builds.
+  local mem_kb=""
+  if [[ -r /proc/meminfo ]]; then
+    mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -n "${mem_kb}" && "${mem_kb}" =~ ^[0-9]+$ ]]; then
+    if (( mem_kb <= 2000000 )); then
+      return 0
+    fi
+  fi
   return 1
 }
 
@@ -820,6 +870,15 @@ if [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
   LCE_DEV_IMAGE="lce-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET}"
 fi
 
+LCE_LOW_SPEC=0
+if is_low_spec_machine; then
+  LCE_LOW_SPEC=1
+fi
+if [[ "${LCE_PREBUILT_ONLY_USER_SET}" -eq 0 ]] && [[ "${LCE_LOW_SPEC}" -eq 1 ]]; then
+  # On low-spec machines, never silently fall back to local builds (can take hours).
+  LCE_PREBUILT_ONLY="1"
+fi
+
 if [[ "${LCE_DRY_RUN}" != "1" ]]; then
   ensure_docker_access
 fi
@@ -836,12 +895,32 @@ if [[ "${LCE_USE_PREBUILT_DEV_IMAGE_USER_SET}" -eq 0 ]] && [[ "${LCE_DEV_IMAGE_U
 fi
 
 if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}" && [[ "${LCE_DEV_IMAGE_USER_SET}" -eq 0 ]]; then
+  if ! prebuilt_supported_arch; then
+    arch="$(host_arch)"
+    if [[ "${LCE_PREBUILT_AUTO_ACTIVE}" -eq 1 ]] && ! as_bool "${LCE_PREBUILT_ONLY}"; then
+      echo "WARNING: prebuilt image auto-mode: arch '${arch}' uchun prebuilt image yo'q. Local build'ga o'tyapman." >&2
+      LCE_USE_PREBUILT_DEV_IMAGE="0"
+      LCE_DEV_IMAGE="${LCE_LOCAL_DEV_IMAGE}"
+    else
+      echo "ERROR: prebuilt image faqat amd64/arm64 uchun mavjud. Sizda arch: ${arch}" >&2
+      echo "FIX (Raspberry Pi): 64-bit OS (aarch64) o'rnating." >&2
+      exit 1
+    fi
+  fi
+
   derived_image="$(derive_ghcr_image 2>/dev/null || true)"
   if [[ -n "${derived_image}" ]]; then
     LCE_DEV_IMAGE="${derived_image}"
     echo "Prebuilt image: ${LCE_DEV_IMAGE}"
+    validate_image_ref "${LCE_DEV_IMAGE}" || exit 1
   else
     if [[ "${LCE_PREBUILT_AUTO_ACTIVE}" -eq 1 ]]; then
+      if as_bool "${LCE_PREBUILT_ONLY}"; then
+        echo "ERROR: prebuilt image auto-mode: GHCR image aniqlanmadi va LCE_PREBUILT_ONLY=1. Local build qilinmaydi." >&2
+        echo "FIX: repo origin to'g'ri ekanini tekshiring (git remote -v) yoki LCE_DEV_IMAGE ni qo'lda bering." >&2
+        echo "  LCE_DEV_IMAGE=ghcr.io/<owner>/xlcu-bridge-dev:${LCE_BRIDGE_IMAGE_TARGET} LCE_USE_PREBUILT_DEV_IMAGE=1 make run" >&2
+        exit 1
+      fi
       echo "WARNING: prebuilt image auto-mode: GHCR image aniqlanmadi. Local build'ga o'tyapman." >&2
       LCE_USE_PREBUILT_DEV_IMAGE="0"
       LCE_DEV_IMAGE="${LCE_LOCAL_DEV_IMAGE}"
@@ -1016,10 +1095,35 @@ if [[ "${LCE_START_CORE_AGENT}" -eq 1 ]]; then
 fi
 
 if as_bool "${LCE_USE_PREBUILT_DEV_IMAGE}"; then
+  validate_image_ref "${LCE_DEV_IMAGE}" || exit 1
+  if ! prebuilt_supported_arch; then
+    arch="$(host_arch)"
+    if [[ "${LCE_PREBUILT_AUTO_ACTIVE}" -eq 1 ]] && ! as_bool "${LCE_PREBUILT_ONLY}"; then
+      echo "WARNING: prebuilt image auto-mode: arch '${arch}' uchun prebuilt image yo'q. Local build'ga o'tyapman." >&2
+      LCE_USE_PREBUILT_DEV_IMAGE="0"
+      LCE_DEV_IMAGE="${LCE_LOCAL_DEV_IMAGE}"
+    else
+      echo "ERROR: prebuilt image faqat amd64/arm64 uchun mavjud. Sizda arch: ${arch}" >&2
+      echo "FIX (Raspberry Pi): 64-bit OS (aarch64) o'rnating." >&2
+      exit 1
+    fi
+  fi
+
   if ! docker image inspect "${LCE_DEV_IMAGE}" >/dev/null 2>&1; then
-    if ! docker pull "${LCE_DEV_IMAGE}"; then
+    pull_out=""
+    if ! pull_out="$(docker pull "${LCE_DEV_IMAGE}" 2>&1)"; then
+      printf '%s\n' "${pull_out}" >&2
       if [[ "${LCE_PREBUILT_AUTO_ACTIVE}" -eq 1 ]]; then
+        if as_bool "${LCE_PREBUILT_ONLY}"; then
+          echo "ERROR: prebuilt image pull failed va LCE_PREBUILT_ONLY=1. Local build qilinmaydi." >&2
+          echo "CMD: docker pull ${LCE_DEV_IMAGE}" >&2
+          echo "TIP: GHCR private bo'lsa: docker login ghcr.io" >&2
+          echo "TIP: arch mos bo'lishi kerak (arm64/amd64)." >&2
+          exit 1
+        fi
+
         echo "WARNING: prebuilt image pull failed; local build'ga o'tyapman: ${LCE_DEV_IMAGE}" >&2
+        echo "TIP: low-spec qurilmada kutib o'tirmaslik uchun: LCE_PREBUILT_ONLY=1 make run" >&2
         LCE_USE_PREBUILT_DEV_IMAGE="0"
         LCE_DEV_IMAGE="${LCE_LOCAL_DEV_IMAGE}"
       else
