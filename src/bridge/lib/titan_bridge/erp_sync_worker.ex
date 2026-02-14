@@ -578,10 +578,13 @@ defmodule TitanBridge.ErpSyncWorker do
         if use_epc_only_payload?() do
           _ = sync_stock_drafts(false)
           maybe_notify_new_draft(name, event)
+          RfidBot.replay_recent_misses()
           :ok
         else
           with {:ok, row} <- resolve_doc(doc, "Stock Entry", name) do
-            if to_int(row["docstatus"]) == 0 do
+            is_open = to_int(row["docstatus"]) == 0
+
+            if is_open do
               update_stock_drafts([row], false)
               maybe_notify_new_draft(row["name"] || name, event)
             else
@@ -590,6 +593,10 @@ defmodule TitanBridge.ErpSyncWorker do
 
             # Keep EPC→draft mapping in sync for webhook-driven updates.
             build_epc_draft_mapping()
+
+            if is_open do
+              RfidBot.replay_recent_misses()
+            end
           end
         end
 

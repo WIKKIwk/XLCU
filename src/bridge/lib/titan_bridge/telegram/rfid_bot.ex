@@ -37,6 +37,7 @@ defmodule TitanBridge.Telegram.RfidBot do
   @draft_refresh_default_ms 180_000
   @draft_sync_timeout_default_ms 60_000
   @draft_notify_ttl_default_ms 120_000
+  @miss_replay_window_default_ms 300_000
   @submit_page_size 8
 
   def start_link(_args) do
@@ -50,6 +51,10 @@ defmodule TitanBridge.Telegram.RfidBot do
   end
 
   def notify_draft_event(_, _), do: :ok
+
+  def replay_recent_misses(limit \\ 100) do
+    GenServer.cast(__MODULE__, {:replay_recent_misses, limit})
+  end
 
   @impl true
   def init(_) do
@@ -65,6 +70,12 @@ defmodule TitanBridge.Telegram.RfidBot do
   @impl true
   def handle_cast({:draft_event, name, event}, state) do
     maybe_notify_draft_event(name, event)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:replay_recent_misses, limit}, state) do
+    replay_recent_misses_now(limit)
     {:noreply, state}
   end
 
@@ -1257,8 +1268,11 @@ defmodule TitanBridge.Telegram.RfidBot do
 
   # --- RFID Tag Matching ---
 
-  defp handle_tag_scan(raw_epc) do
+  defp handle_tag_scan(raw_epc), do: handle_tag_scan(raw_epc, [])
+
+  defp handle_tag_scan(raw_epc, opts) do
     epc = normalize_epc(raw_epc)
+    ignore_miss = Keyword.get(opts, :ignore_miss, false)
 
     if epc == "" do
       :ok
@@ -1272,7 +1286,7 @@ defmodule TitanBridge.Telegram.RfidBot do
           Logger.debug("RFID [#{epc}] SKIP: recently_submitted")
           :ok
 
-        recently_missed?(epc) ->
+        not ignore_miss and recently_missed?(epc) ->
           :ok
 
         true ->
@@ -1871,6 +1885,45 @@ defmodule TitanBridge.Telegram.RfidBot do
       _ -> @miss_ttl_default_ms
     end
   end
+
+  defp miss_replay_window_ms do
+    case Integer.parse(to_string(System.get_env("LCE_RFID_MISS_REPLAY_WINDOW_MS") || "")) do
+      {n, _} when n >= 0 and n <= 86_400_000 -> n
+      _ -> @miss_replay_window_default_ms
+    end
+  end
+
+  defp replay_recent_misses_now(limit) do
+    now = System.monotonic_time(:millisecond)
+    window = miss_replay_window_ms()
+
+    entries =
+      :ets.tab2list(@miss_table)
+      |> Enum.filter(fn {epc, ts} ->
+        is_binary(epc) and epc != "" and is_integer(ts) and now - ts <= window
+      end)
+      |> Enum.sort_by(fn {_epc, ts} -> ts end, :desc)
+      |> Enum.take(normalize_positive_int(limit, 100))
+
+    if entries != [] do
+      Logger.info("RFID miss replay: #{length(entries)} EPC qayta tekshirildi")
+    end
+
+    Enum.each(entries, fn {epc, _ts} ->
+      handle_tag_scan(epc, ignore_miss: true)
+    end)
+  end
+
+  defp normalize_positive_int(value, _default) when is_integer(value) and value > 0, do: value
+
+  defp normalize_positive_int(value, default) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {n, _} when n > 0 -> n
+      _ -> default
+    end
+  end
+
+  defp normalize_positive_int(_value, default), do: default
 
   defp submitted_ttl_ms do
     case Integer.parse(to_string(System.get_env("LCE_RFID_SUBMITTED_TTL_MS") || "")) do
