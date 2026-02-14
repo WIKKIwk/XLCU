@@ -577,6 +577,8 @@ profiles["local"] = local_profile
 
 erp["profiles"] = profiles
 erp["activeProfile"] = "local"
+erp["baseUrl"] = ""
+erp["auth"] = ""
 erp["pushEnabled"] = False
 erp["rpcEnabled"] = False
 if "overrideEnv" not in erp:
